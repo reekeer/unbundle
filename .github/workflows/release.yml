@@ -2,8 +2,11 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  pull_request:
 
 jobs:
   build:
@@ -29,6 +32,7 @@ jobs:
 
       - name: Check tag matches package version
         id: version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version=$(node -p "require('./package.json').version")
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -52,13 +56,13 @@ jobs:
       - name: Pack
         run: npm pack
 
-      - name: Run the packed CLI with Node through npx
+      - name: Run the packed CLI with Node only through npx
         run: |
           mkdir -p "$RUNNER_TEMP/npx-check"
           cd "$RUNNER_TEMP/npx-check"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE"/*.tgz
-          npx unbundle --help
+          PATH="$(echo "$PATH" | tr ':' '\n' | grep -v '\.bun' | paste -sd:)" npx unbundle --help
 
       - name: Upload package
         uses: actions/upload-artifact@v5
@@ -68,6 +72,7 @@ jobs:
 
   npm:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
       name: unbundle
@@ -109,6 +114,7 @@ jobs:
 
   github-release:
     needs: [build, npm]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     permissions:
