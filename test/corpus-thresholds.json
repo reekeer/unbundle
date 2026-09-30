@@ -1,0 +1,168 @@
+{
+  "next-libs": {
+    "coverage": "complete",
+    "maxDegraded": 0,
+    "minReadableModuleNames": 0.9,
+    "maxMangledApp": 0.6,
+    "packages": [
+      "@radix-ui/react-dialog",
+      "@tanstack/query-core",
+      "@tanstack/react-query",
+      "axios",
+      "next",
+      "react",
+      "react-dom",
+      "scheduler",
+      "zustand"
+    ],
+    "markers": [
+      "CORPUS_LOADING",
+      "CORPUS_SAVED",
+      "CORPUS_CONFIRM",
+      "CORPUS_PERSISTED"
+    ],
+    "minPages": 5,
+    "files": [
+      "src/api/index.js"
+    ],
+    "contains": {
+      "src/pages/DialogPageClient.jsx": [
+        "from \"@radix-ui/react-dialog\";",
+        "<DialogTrigger>Open</DialogTrigger>",
+        "<DialogTitle>CORPUS_CONFIRM</DialogTitle>"
+      ],
+      "src/pages/DashboardPageClient.jsx": [
+        "import { useQuery } from \"@tanstack/react-query\";",
+        "import { fetchStats } from \"../api/index.js\";"
+      ],
+      "src/api/index.js": [
+        "import axios from \"axios\";",
+        "let api = axios.create({",
+        "export async function fetchUser(",
+        "export async function fetchStats("
+      ]
+    },
+    "maxLibraryRootFiles": 3
+  },
+  "vite-router": {
+    "coverage": "complete",
+    "maxDegraded": 0,
+    "minReadableModuleNames": 0.9,
+    "maxMangledApp": 0.65,
+    "packages": [],
+    "markers": [
+      "VITE_HOME",
+      "VITE_USERS",
+      "VITE_ABOUT"
+    ],
+    "minPages": 1
+  },
+  "webpack-stress": {
+    "coverage": "complete",
+    "maxDegraded": 0,
+    "minReadableModuleNames": 0.95,
+    "maxMangledApp": 0.1,
+    "packages": [
+      "react",
+      "react-dom",
+      "scheduler"
+    ],
+    "markers": [
+      "STRESS_MAIN"
+    ],
+    "minMarkerPrefixCount": {
+      "prefix": "STRESS_ROUTE_",
+      "count": 300
+    },
+    "minPages": 1
+  },
+  "next-tailwind-lucide": {
+    "coverage": "complete",
+    "maxDegraded": 0,
+    "minReadableModuleNames": 0.95,
+    "maxMangledApp": 0.5,
+    "packages": [
+      "lucide-react",
+      "next",
+      "react",
+      "react-dom",
+      "zustand"
+    ],
+    "markers": [
+      "TG_OPEN_WALLET",
+      "TG_COPY_ID",
+      "TG_SEND",
+      "TG_ONE_COIN"
+    ],
+    "minPages": 3,
+    "files": [
+      "src/assets/css/tailwind.css",
+      "src/icons/Telegram.jsx",
+      "vendor/lucide-react/dist/esm/createLucideIcon.js",
+      "src/pages/Nav.jsx",
+      "src/stores/useCoinsStore.js",
+      "vendor/zustand/chunk.js"
+    ],
+    "contains": {
+      ".chunks/html/index.html": [
+        "https://telegram.org/js/telegram-web-app.js"
+      ],
+      "src/pages/WalletPageClient.jsx": [
+        "import { Wallet, ArrowUpRight, ArrowDownLeft } from \"lucide-react\";",
+        "<ArrowUpRight className=\"h-4 w-4\" />",
+        "import { useCoinsStore } from \"../stores/useCoinsStore.js\";",
+        "let coins = useCoinsStore("
+      ],
+      "src/pages/TgCard.jsx": [
+        "import { clsx } from \"clsx\";"
+      ],
+      "src/stores/useCoinsStore.js": [
+        "import { create } from \"zustand\";",
+        "export let useCoinsStore = create("
+      ]
+    },
+    "maxLibraryRootFiles": 3
+  },
+  "next-many-components": {
+    "coverage": "complete",
+    "maxDegraded": 0,
+    "minReadableModuleNames": 0.95,
+    "maxMangledApp": 0.5,
+    "packages": [
+      "next",
+      "react",
+      "react-dom"
+    ],
+    "markers": [
+      "MANY_FEATURE_FAST",
+      "MANY_FAQ_FREE",
+      "MANY_SUBSCRIBED",
+      "MANY_FOOTER"
+    ],
+    "minPages": 1,
+    "files": [
+      "src/components/Header.jsx",
+      "src/components/Hero.jsx",
+      "src/components/Features.jsx",
+      "src/components/FeatureCard.jsx",
+      "src/components/Pricing.jsx",
+      "src/components/PricingCard.jsx",
+      "src/components/Faq.jsx",
+      "src/components/FaqItem.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Button.jsx",
+      "src/components/Avatar.jsx",
+      "src/components/SubscribeForm.jsx"
+    ],
+    "contains": {
+      "src/components/Hero.jsx": [
+        "import { Button } from \"./Button.jsx\";",
+        "<Button onClick={onSignup}>Get started</Button>"
+      ],
+      "src/components/Features.jsx": [
+        "import { FeatureCard } from \"./FeatureCard.jsx\";"
+      ]
+    },
+    "maxLibraryRootFiles": 3
+  }
+}
