@@ -1,6 +1,6 @@
 {
   "name": "@reekeer/unbundle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Recover readable client-side source code from a deployed website",
   "homepage": "https://github.com/reekeer/unbundle#readme",
   "bugs": {

@@ -41,7 +41,7 @@ A site may live under a sub-path (`https://host/t/app`): every URL is resolved a
 page, the Next.js basePath is taken from where `/_next/` sits.
 
 ```
-  unbundle v0.1.0  -> https://example.com/
+  unbundle v0.1.1  -> https://example.com/
 
 [ + ] detected bundler: vite
 [ + ] found 20 pages
