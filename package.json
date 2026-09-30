@@ -1,0 +1,80 @@
+{
+  "name": "@reekeer/unbundle",
+  "version": "0.1.0",
+  "description": "Recover readable client-side source code from a deployed website",
+  "homepage": "https://github.com/reekeer/unbundle#readme",
+  "bugs": {
+    "url": "https://github.com/reekeer/unbundle/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reekeer/unbundle.git"
+  },
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "bin": {
+    "unbundle": "bin/unbundle.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "fingerprints.sigdb",
+    "icons.sigdb",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "unbundle": "bun src/cli.ts",
+    "start": "bun src/cli.ts",
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit -p .",
+    "test": "bun scripts/test.ts",
+    "check": "bun run typecheck && bun run test",
+    "fingerprints": "bun scripts/fingerprints/build.ts",
+    "corpus": "bun scripts/corpus/build.ts",
+    "test:corpus": "UNBUNDLE_CORPUS=1 bun scripts/test.ts test/corpus.test.ts",
+    "test:unit": "bun scripts/test.ts test/unit.test.ts",
+    "test:e2e": "bun scripts/test.ts --e2e",
+    "fixtures": "bun scripts/fixtures.ts"
+  },
+  "devDependencies": {
+    "@types/babel__generator": "^7.27.0",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5"
+  },
+  "trustedDependencies": [
+    "@reekeer/sigdb"
+  ],
+  "dependencies": {
+    "@babel/generator": "^7",
+    "@babel/parser": "^7",
+    "@babel/traverse": "^7",
+    "@babel/types": "^7",
+    "@jridgewell/trace-mapping": "^0.3.31",
+    "@reekeer/sigdb": "3.0.0",
+    "node-html-parser": "^9.0.4",
+    "prettier": "^3.9.9",
+    "prettier-plugin-astro": "^1.1.0",
+    "prettier-plugin-svelte": "^4.1.1",
+    "svelte": "^5.57.1",
+    "webcrack": "^2.16.0",
+    "bun": "^1.4.2"
+  },
+  "keywords": [
+    "unbundle",
+    "reverse-engineering",
+    "source-maps",
+    "webpack",
+    "vite",
+    "nuxt",
+    "next",
+    "deobfuscate"
+  ],
+  "license": "MIT"
+}
