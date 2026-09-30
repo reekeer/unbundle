@@ -4,19 +4,20 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const shell = process.platform === "win32";
 
-function bunBinary() {
-  if (process.versions.bun) return process.execPath;
-  try {
-    return createRequire(import.meta.url).resolve("bun/bin/bun.exe");
-  } catch {
-    return "bun";
-  }
+function bun() {
+  if (process.versions.bun) return [process.execPath];
+  const system = spawnSync("bun", ["--version"], { stdio: "ignore", shell });
+  if (!system.error && system.status === 0) return ["bun"];
+  const version = /^bun@(.+)$/.exec(createRequire(import.meta.url)("../package.json").packageManager ?? "")?.[1] ?? "latest";
+  return ["npx", "--yes", `bun@${version}`];
 }
 
-const result = spawnSync(bunBinary(), [cli, ...process.argv.slice(2)], { stdio: "inherit" });
+const [command, ...prefix] = bun();
+const result = spawnSync(command, [...prefix, cli, ...process.argv.slice(2)], { stdio: "inherit", shell });
 if (result.error) {
-  console.error("unbundle runs on Bun, and no Bun binary was found. Install it from https://bun.sh or run `bunx @reekeer/unbundle`.");
+  console.error("unbundle runs on Bun and could not start it. Install Bun from https://bun.sh or run `bunx @reekeer/unbundle`.");
   process.exit(1);
 }
 process.exit(result.status ?? 1);

@@ -4,7 +4,7 @@
 [![Status](https://img.shields.io/badge/status-beta-orange)](#status)
 [![Bun](https://img.shields.io/badge/bun-%3E%3D1.4-black)](https://bun.sh/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
-[![CI](https://github.com/reekeer/unbundle/actions/workflows/ci.yml/badge.svg)](https://github.com/reekeer/unbundle/actions/workflows/ci.yml)
+[![CI](https://github.com/reekeer/unbundle/actions/workflows/release.yml/badge.svg)](https://github.com/reekeer/unbundle/actions/workflows/release.yml)
 
 Opens a site the way a browser does and turns its production bundles back into a readable
 project: modules split out of chunks, names restored, components one per file, libraries
@@ -18,8 +18,8 @@ bunx @reekeer/unbundle https://example.com
 ```
 
 `npx @reekeer/unbundle` and `pnpm dlx @reekeer/unbundle` work too. The CLI runs on Bun; with
-only Node installed, the `bin/unbundle.mjs` launcher starts the Bun binary that comes with the
-`bun` npm dependency (or a system `bun`).
+only Node installed, the `bin/unbundle.mjs` launcher uses a system `bun` or fetches it with
+`npx bun`.
 
 ## Usage
 
@@ -188,8 +188,8 @@ Fixtures are four apps stored as source archives in `test/fixtures/apps/`, built
 `bun run fingerprints` installs the packages into `.cache/fingerprints`; on a slow disk point
 `UNBUNDLE_FP_CACHE` at a local directory with the same `package.json`.
 
-Releases are published from a `v*` tag by `.github/workflows/release.yml`: tests, `npm pack`,
-npm (trusted publishing), GitHub release.
+`.github/workflows/release.yml` typechecks and tests every push and pull request; a `v*` tag
+also publishes the packed tarball to npm (trusted publishing) and to a GitHub release.
 
 ## License
 
