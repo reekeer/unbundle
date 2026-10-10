@@ -5,6 +5,7 @@
 [![Bun](https://img.shields.io/badge/bun-%3E%3D1.4-black)](https://bun.sh/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 [![CI](https://github.com/reekeer/unbundle/actions/workflows/release.yml/badge.svg)](https://github.com/reekeer/unbundle/actions/workflows/release.yml)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Freekeer%2Funbundle.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Freekeer%2Funbundle?ref=badge_shield)
 
 Opens a site the way a browser does and turns its production bundles back into a readable
 project: modules split out of chunks, names restored, components one per file, libraries
@@ -194,3 +195,6 @@ also publishes the packed tarball to npm (trusted publishing) and to a GitHub re
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Freekeer%2Funbundle.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Freekeer%2Funbundle?ref=badge_large)
