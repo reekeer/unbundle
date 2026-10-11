@@ -187,7 +187,10 @@ Fixtures are four apps stored as source archives in `test/fixtures/apps/`, built
 | `webpack-app` | `site-webpack`, `site-rspack` | webpack 5 and Rspack builds, an inlined SHA-256 proof-of-work |
 
 `bun run fingerprints` installs the packages into `.cache/fingerprints`; on a slow disk point
-`UNBUNDLE_FP_CACHE` at a local directory with the same `package.json`.
+`UNBUNDLE_FP_CACHE` at a local directory with the same `package.json`. The walk itself lives in
+`scripts/fingerprints/extract.ts`: `bun scripts/fingerprints/extract.ts --modules <node_modules>
+--out <rules.json> [--components] [--icons]` writes the rules as JSON without building, which is how
+sigdb-factory rebuilds both databases from fresh package releases.
 
 `.github/workflows/release.yml` typechecks and tests every push and pull request; a `v*` tag
 also publishes the packed tarball to npm (trusted publishing) and to a GitHub release.

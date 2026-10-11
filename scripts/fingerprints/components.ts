@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { listDir } from "./list.ts";
 
 export interface LibraryComponent {
   package: string;
@@ -30,9 +31,12 @@ const SCRIPTED: Array<{ package: string; dir: string }> = [
   { package: "nuxt", dir: "dist/app/components" },
 ];
 
+/** Packages whose components go to the components index. */
+export const COMPONENT_PACKAGES: string[] = [...new Set([...COMPILED, ...SOURCE.map((s) => s.package), ...NAMED.map((s) => s.package), ...SCRIPTED.map((s) => s.package)])];
+
 function files(dir: string): string[] {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).flatMap((entry) => {
+  return listDir(dir).flatMap((entry) => {
     const path = join(dir, entry);
     return statSync(path).isDirectory() ? files(path) : [path];
   });
