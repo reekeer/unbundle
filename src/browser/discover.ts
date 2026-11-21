@@ -1,11 +1,9 @@
 import { parse, type HTMLElement } from "node-html-parser";
 import type { AssetRef, Page, ResourceType } from "../types.ts";
 import type { Browser } from "./browser.ts";
+import { runtimeDependencies } from "./runtime.ts";
 
 const transpiler = new Bun.Transpiler({ loader: "js" });
-const WORKER = /new\s+(?:Shared)?Worker\(\s*(?:new\s+URL\(\s*)?["'`]([^"'`$]+)["'`]/g;
-const SERVICE_WORKER = /serviceWorker\.register\(\s*["'`]([^"'`$]+)["'`]/g;
-const IMPORT_SCRIPTS = /importScripts\(\s*["'`]([^"'`$]+)["'`]/g;
 const CSS_IMPORT = /@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?/g;
 const CSS_URL = /\burl\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)"']+))\s*\)/g;
 const MEDIA = /\.(?:avif|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot|mp3|mp4|ogg|webm)$/i;
@@ -129,6 +127,7 @@ export function htmlResources(page: Page): AssetRef[] {
     else if (rel.includes("preload") || rel.includes("prefetch")) {
       if (as === "script") add(href, "script", rel.includes("preload") ? "preload" : "prefetch", rel.includes("prefetch"));
       else if (as === "style") add(href, "style", "preload");
+      else if (as === "fetch" && /\.wasm(?:[?#]|$)/i.test(href ?? "")) add(href, "other", "preload", true);
       else if (as === "fetch" && /\.m?js(\?|$)/.test(href ?? "")) add(href, "fetch", "preload", true);
       else if (as === "font" || as === "image") add(href, "other", "preload", true);
     }
@@ -141,7 +140,7 @@ export function htmlResources(page: Page): AssetRef[] {
   }
   for (const node of root.querySelectorAll("style")) refs.push(...styleResources(node.text, page.baseUrl.href));
   for (const inline of inlineScripts(page)) {
-    for (const url of scriptImports(inline.code, page.baseUrl, inline.module)) refs.push({ url, type: "module", initiator: "inline-script" });
+    refs.push(...scriptResources(inline.code, page.baseUrl.href, inline.module));
   }
   refs.push(...linkHeaderResources(page.headers, page.url));
   return refs;
@@ -187,21 +186,15 @@ export function scriptImports(code: string, base: URL | string, module: boolean)
   return [...urls];
 }
 
-export function scriptResources(code: string, scriptUrl: string, module: boolean): AssetRef[] {
+export function scriptResources(code: string, scriptUrl: string, module: boolean, pageBase = scriptUrl): AssetRef[] {
   const refs: AssetRef[] = scriptImports(code, scriptUrl, module).map((url) => ({
     url,
     type: guessType(url) === "style" ? "style" : "module",
     initiator: `import:${scriptUrl}`,
   }));
-  for (const [pattern, type] of [
-    [WORKER, "worker"],
-    [SERVICE_WORKER, "worker"],
-    [IMPORT_SCRIPTS, "script"],
-  ] as const) {
-    for (const match of code.matchAll(pattern)) {
-      const url = resolveHttpUrl(match[1]!, scriptUrl);
-      if (url) refs.push({ url: url.href, type, initiator: `${type}:${scriptUrl}`, optional: true });
-    }
+  for (const { href, base, kind, source } of runtimeDependencies(code, scriptUrl, pageBase)) {
+    const url = resolveHttpUrl(href, base);
+    if (url) refs.push({ url: url.href, type: kind, initiator: `${source}:${scriptUrl}`, optional: true });
   }
   return refs;
 }

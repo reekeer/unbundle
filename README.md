@@ -80,6 +80,16 @@ served for it in snapshot mode.
 The snapshot uses the captured client files. Routes that depend on a server, API,
 or sign-in may require a separate backend.
 
+To replay a public interaction, open the browser's Network panel, perform the
+action and export a sanitized HAR with response content. Run
+`unbundle <url> --depth 0 --har <file>` with the page URL from the recording,
+then use `npm start -- --snapshot` in the output. In HAR mode the CLI gets
+responses from the recording. The importer uses successful
+same-origin GET responses with bodies and ignores requests with authorization
+headers. Recorded API responses match the exact URL and query string.
+`preview.replay` lists those routes and `coverage.backendRequests` lists
+additional API references detected in the recovered code.
+
 ## Output
 
 ```

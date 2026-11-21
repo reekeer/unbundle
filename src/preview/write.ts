@@ -31,6 +31,7 @@ export async function writePreview(tree: OutputTree, pages: Page[], assets: Map<
   const start = pages[0]!;
   const origin = start.url.origin;
   const routes: Preview["routes"] = [];
+  const replay: string[] = [];
   const output = new Map(tree.all().map((file) => [file.path, file]));
   const add = (path: string, content: string) => tree.add({ path, content, kind: "data", renamable: false }).path;
   const entryHtml = output.get("index.html");
@@ -56,13 +57,16 @@ export async function writePreview(tree: OutputTree, pages: Page[], assets: Map<
     if (url.origin !== origin || known.has(url.pathname + url.search)) continue;
     const isScript = asset.ref.type === "script" || asset.ref.type === "module" || asset.ref.type === "worker" || /javascript/i.test(asset.contentType);
     const css = asset.ref.type === "style";
-    const media = asset.ref.type === "other" && MEDIA_RESOURCE.test(asset.contentType);
-    if (!isScript && !css && !media && !TEXT_RESOURCE.test(asset.contentType)) continue;
+    const wasm = /\.wasm$/i.test(url.pathname) || /^application\/wasm\b/i.test(asset.contentType);
+    const recorded = asset.ref.initiator === "har";
+    const media = !!asset.bytes || asset.ref.type === "other" && MEDIA_RESOURCE.test(asset.contentType);
+    if (!isScript && !css && !media && !recorded && !TEXT_RESOURCE.test(asset.contentType)) continue;
     const name = url.pathname.replace(/^\/+/, "") || "asset";
     const path = media ? entries.get(asset.ref.url) : sourceEntry && asset === originalScripts[0] && output.has(sourceEntry) ? sourceEntry : add(posix.join("preview/assets", name), asset.body);
     if (!path) continue;
-    const type = isScript ? "application/javascript; charset=utf-8" : css ? "text/css; charset=utf-8" : asset.contentType;
+    const type = wasm ? "application/wasm" : isScript ? "application/javascript; charset=utf-8" : css ? "text/css; charset=utf-8" : asset.contentType;
     route(url, path, type);
+    if (recorded && asset.ref.type === "fetch") replay.push(url.pathname + url.search);
     if (asset.finalUrl !== asset.ref.url) route(new URL(asset.finalUrl), path, type);
   }
   const preview: Preview = {
@@ -71,6 +75,7 @@ export async function writePreview(tree: OutputTree, pages: Page[], assets: Map<
     editable: vite ? "src/" : sourceEntry && output.has(sourceEntry) ? sourceEntry : "preview/",
     spa: adapter === "angular" || adapter === "vite" || adapter === "react-router",
     routes,
+    ...(replay.length ? { replay } : {}),
   };
   add(".unbundle/preview.json", `${JSON.stringify(preview, null, 2)}\n`);
   const build = await Bun.build({

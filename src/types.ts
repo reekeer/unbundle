@@ -16,6 +16,7 @@ export interface Options {
   includeExternal: boolean;
   standalone?: boolean;
   learn?: boolean;
+  har?: string;
 }
 
 export type ResourceType = "document" | "script" | "module" | "style" | "manifest" | "worker" | "sourcemap" | "fetch" | "other";
@@ -171,6 +172,7 @@ export interface Coverage {
   unfetchedChunkIds: string[];
   seenButNotLoaded: Array<{ url: string; file: string; line: number }>;
   failedResources: string[];
+  backendRequests?: Array<{ url: string; file: string; line: number }>;
 }
 
 export interface Issue {
@@ -186,6 +188,7 @@ export interface Preview {
   editable: string;
   spa: boolean;
   routes: Array<[url: string, path: string, contentType: string]>;
+  replay?: string[];
 }
 
 export interface FileEntry {

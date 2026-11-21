@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { angularSourceCode } from "../src/refine/angular.ts";
@@ -116,6 +118,49 @@ describe("recovery across modules", () => {
 });
 
 describe("local preview", () => {
+  test("replays exact recorded API URLs and serves WASM bytes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "unbundle-har-"));
+    const origin = "http://127.0.0.1:1";
+    const har = join(dir, "public.har");
+    const wasm = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
+    const entry = (path: string, mimeType: string, text: string, encoding?: string) => ({
+      request: { method: "GET", url: origin + path },
+      response: { status: 200, content: { mimeType, text, encoding } },
+    });
+    try {
+      await Bun.write(har, JSON.stringify({ log: { entries: [
+        entry("/", "text/html", "<main>Recorded page</main>"),
+        entry("/api/search?q=one", "application/json", '{"result":"one"}'),
+        entry("/api/search?q=two", "application/json", '{"result":"two"}'),
+        entry("/codec.wasm", "application/wasm", Buffer.from(wasm).toString("base64"), "base64"),
+      ] } }));
+      const { outDir, manifest } = await runOn(origin, { har, crawlDepth: 0, sourceMaps: false });
+      expect(manifest.preview?.replay).toEqual(["/api/search?q=one", "/api/search?q=two"]);
+      const child = Bun.spawn(["node", ".unbundle/start.mjs", "--snapshot"], { cwd: outDir, env: { PORT: "0", PATH: Bun.env.PATH }, stdout: "pipe" });
+      try {
+        const reader = child.stdout.getReader();
+        let output = "";
+        while (!output.includes("Preview:") || !output.includes("\n")) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("preview did not start");
+          output += new TextDecoder().decode(chunk.value);
+        }
+        const url = /http:\/\/127\.0\.0\.1:\d+/.exec(output)![0];
+        expect(await (await fetch(url + "/api/search?q=one")).json()).toEqual({ result: "one" });
+        expect(await (await fetch(url + "/api/search?q=two")).json()).toEqual({ result: "two" });
+        expect((await fetch(url + "/api/search?q=unknown")).status).toBe(404);
+        const codec = await fetch(url + "/codec.wasm");
+        expect(codec.headers.get("content-type")).toBe("application/wasm");
+        expect(new Uint8Array(await codec.arrayBuffer())).toEqual(wasm);
+      } finally {
+        child.kill();
+        await child.exited;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
   test("a generic site's edited recovered JavaScript is served after reload", async () => {
     const icon = new Uint8Array([0, 128, 255, 10]);
     const fixture = Bun.serve({

@@ -11,6 +11,7 @@ export interface SeenUrl {
 export interface LoaderScan {
   loaders: LoaderFinding[];
   urls: SeenUrl[];
+  backend: SeenUrl[];
 }
 
 const SCRIPT_URL = /^(https?:\/\/[^\s"'`<>]+|\/[^\s"'`<>]*)\.(m?js|css)(\?[^\s"'`<>]*)?$/i;
@@ -53,11 +54,12 @@ function scriptElementBinding(path: NodePath, object: t.Node): boolean {
 export function scanLoaders(file: string, code: string): LoaderScan {
   const loaders: LoaderFinding[] = [];
   const urls: SeenUrl[] = [];
+  const backend: SeenUrl[] = [];
   let ast: t.File;
   try {
     ast = parseForFile(file, code);
   } catch {
-    return { loaders, urls };
+    return { loaders, urls, backend };
   }
   const regionStrings = (path: NodePath) => {
     let top: NodePath = path;
@@ -105,6 +107,12 @@ export function scanLoaders(file: string, code: string): LoaderScan {
         return;
       }
       const name = calleeName(callee);
+      if (name === "fetch" || name === "ajax") {
+        const resource = staticValue(args[0]) ?? (t.isTemplateLiteral(args[0]) ? args[0].quasis[0]?.value.cooked : null);
+        if (resource && /^(?:\/api\/|\/[^?#\s]+\.(?:php|aspx|cgi)(?:[?#]|$))/.test(resource)) {
+          backend.push({ value: resource.replace(/\?$/, ""), file, line: path.node.loc?.start.line ?? 0 });
+        }
+      }
       if (isModuleLoader(callee) && args.length && !isStatic(args[0]) && !t.isNumericLiteral(args[0])) {
         add("dynamic-require", path.node);
         return;
@@ -139,7 +147,7 @@ export function scanLoaders(file: string, code: string): LoaderScan {
       }
     },
   });
-  return { loaders, urls };
+  return { loaders, urls, backend };
 }
 
 function isModuleLoader(callee: t.Node): boolean {

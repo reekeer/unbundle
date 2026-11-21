@@ -4,7 +4,7 @@ import { genericAdapter, loadAdapters } from "./adapters/index.ts";
 import { Browser } from "./browser/browser.ts";
 import { htmlResources, importMap, inlineScripts, openPage, pageLinks, resolveHttpUrl, scriptResources, styleResources } from "./browser/discover.ts";
 import { scanLoaders } from "./browser/coverage.ts";
-import { toHar } from "./browser/har.ts";
+import { readHar, toHar, type RecordedResponse } from "./browser/har.ts";
 import { loadExtractors, renderStandalone } from "./standalone/index.ts";
 import { count, errorMessage, Report, type Logger } from "./log.ts";
 import { commonDirectory, DIRS, hostDir, Layout, MANIFEST_FILE, normalizeSourcePath, OutputTree, relativeImport, repointImports, safeSegment, writeTree } from "./output.ts";
@@ -56,11 +56,14 @@ interface Run {
   log: Logger;
   report: Report;
   browser: Browser;
+  recording: ReadonlyMap<string, RecordedResponse>;
 }
 
 export async function run(options: Options, log: Logger, adapters?: BundlerAdapter[]): Promise<RunResult> {
   const started = performance.now();
-  const ctx: Run = { options, log, report: new Report(), browser: new Browser(options, log.withTag("net")) };
+  const recording = options.har ? await readHar(options.har, options.url.origin, options.maxBytes) : new Map<string, RecordedResponse>();
+  const ctx: Run = { options, log, report: new Report(), recording, browser: new Browser(options, log.withTag("net"), options.har ? recording : undefined) };
+  if (options.har) log.info(`loaded ${count(recording.size, "recorded GET response")} from HAR`);
 
   log.start("1/9 open page");
   const start = await openPage(ctx.browser, options.url);
@@ -240,7 +243,7 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   const coverage = coverageReport(ctx, adapter, { pages, all: assets, fresh: [] }, tree, entries, missing, scope, libraryStrings(fingerprints), libraryFunctions);
   if (coverage.status === "possibly-incomplete") log.warn("some code may be missing, see .unbundle/manifest.json#coverage");
   const outDir = join(options.outDir, hostDir(start.url));
-  const quality = measureQuality(tree, modules, files, libraryPackages);
+  const quality = measureQuality(ctx, tree, modules, files, libraryPackages);
   if (quality.mangledIdentifiers.app >= 0.35) log.warn(`${Math.round(quality.mangledIdentifiers.app * 100)}% of the site's identifiers are still 1-2 letters, see .unbundle/manifest.json#summary.quality`);
   for (const finding of findings.filter((f) => f.kind === "auth" || f.kind === "captcha" || f.kind === "mini-app")) log.info(`${finding.name}: ${finding.file}:${finding.line}`);
   const manifest: Manifest = {
@@ -468,9 +471,10 @@ async function loadResources(ctx: Run, adapter: BundlerAdapter, pages: Page[]): 
   const entries = new Map<string, FileEntry>();
   const queued = new Set<string>();
   const referrerOf = new Map<string, URL>();
+  const baseOf = new Map<string, string>();
   let pending: AssetRef[] = [];
 
-  const enqueue = (refs: AssetRef[], referrer: URL) => {
+  const enqueue = (refs: AssetRef[], referrer: URL, pageBase = start.baseUrl.href) => {
     for (const ref of refs) {
       if (queued.has(ref.url) || ref.type === "document" || ref.type === "sourcemap") continue;
       queued.add(ref.url);
@@ -481,14 +485,16 @@ async function loadResources(ctx: Run, adapter: BundlerAdapter, pages: Page[]): 
         continue;
       }
       referrerOf.set(ref.url, referrer);
+      baseOf.set(ref.url, pageBase);
       pending.push(ref);
     }
   };
 
   for (const page of pages) {
-    enqueue(htmlResources(page), page.url);
-    enqueue(safe(ctx, "collectAssets", () => adapter.collectAssets(page), []), page.url);
+    enqueue(htmlResources(page), page.url, page.baseUrl.href);
+    enqueue(safe(ctx, "collectAssets", () => adapter.collectAssets(page), []), page.url, page.baseUrl.href);
   }
+  enqueue([...ctx.recording.values()].map(({ ref }) => ref), start.url);
 
   for (let round = 1; pending.length && round <= MAX_ROUNDS; round++) {
     const batch = pending;
@@ -500,7 +506,8 @@ async function loadResources(ctx: Run, adapter: BundlerAdapter, pages: Page[]): 
     results.forEach((result, i) => {
       const ref = batch[i]!;
       if (result.status === "fulfilled") {
-        const asset = { ref, finalUrl: result.value.finalUrl, contentType: result.value.contentType, headers: result.value.headers, body: result.value.body, ...(result.value.bytes ? { bytes: result.value.bytes } : {}) };
+        const recorded = ctx.recording.get(ref.url);
+        const asset = { ref: recorded?.ref.type === "fetch" ? recorded.ref : ref, finalUrl: result.value.finalUrl, contentType: result.value.contentType, headers: result.value.headers, body: result.value.body, ...(result.value.bytes ? { bytes: result.value.bytes } : {}) };
         assets.set(ref.url, asset);
         fresh.push(asset);
         return;
@@ -518,7 +525,10 @@ async function loadResources(ctx: Run, adapter: BundlerAdapter, pages: Page[]): 
     for (const asset of fresh) {
       const from = new URL(asset.finalUrl);
       if (asset.ref.type === "style") enqueue(styleResources(asset.body, asset.finalUrl), from);
-      else if (isScript(asset)) enqueue(scriptResources(asset.body, asset.finalUrl, asset.ref.type === "module"), from);
+      else if (isScript(asset)) {
+        const base = asset.ref.type === "worker" ? asset.finalUrl : baseOf.get(asset.ref.url) ?? start.baseUrl.href;
+        enqueue(scriptResources(asset.body, asset.finalUrl, asset.ref.type === "module", base), from, base);
+      }
     }
     if (adapter.discover) enqueue(safe(ctx, "discover", () => adapter.discover!({ pages, all: assets, fresh }), []), start.url);
   }
@@ -1475,9 +1485,23 @@ function coverageReport(
   const libraryLoaders: LoaderFinding[] = [];
   const seenButNotLoaded: Coverage["seenButNotLoaded"] = [];
   const seenUrls = new Set<string>();
+  const backendRequests = new Map<string, { url: string; file: string; line: number }>();
   for (const file of tree.all()) {
-    if ((file.kind !== "module" && file.kind !== "script") || file.path.includes("/_missing/")) continue;
-    const scan = scanLoaders(file.path, file.content);
+    const backendSource = file.kind === "source" && /\/api\/|\.(?:php|aspx|cgi)\b/.test(file.content);
+    if ((file.kind !== "module" && file.kind !== "script" && !backendSource) || file.path.includes("/_missing/")) continue;
+    let scan: ReturnType<typeof scanLoaders>;
+    try {
+      scan = scanLoaders(file.path, file.content);
+    } catch (err) {
+      ctx.report.warn({ stage: "coverage", path: file.path, message: errorMessage(err) });
+      continue;
+    }
+    if (!file.library && !file.path.startsWith("vendor/") && !file.path.includes("/node_modules/")) for (const finding of scan.backend) {
+      const url = resolveHttpUrl(finding.value, origin);
+      if (!url || url.origin !== origin.origin || discover.all.has(url.href) || backendRequests.has(url.href)) continue;
+      backendRequests.set(url.href, { url: url.href, file: finding.file, line: finding.line });
+    }
+    if (file.kind === "source") continue;
     for (const finding of scan.loaders) {
       const known = (finding.regionStrings ?? []).filter((s) => knownStrings.has(s)).length;
       const { regionStrings: _, regionName, ...clean } = finding;
@@ -1504,10 +1528,11 @@ function coverageReport(
     unfetchedChunkIds,
     seenButNotLoaded,
     failedResources,
+    ...(backendRequests.size ? { backendRequests: [...backendRequests.values()] } : {}),
   };
 }
 
-function measureQuality(tree: OutputTree, modules: Manifest["modules"], files: FileEntry[], inlinedPackages: string[]): Quality {
+function measureQuality(ctx: Run, tree: OutputTree, modules: Manifest["modules"], files: FileEntry[], inlinedPackages: string[]): Quality {
   const written = modules.filter((m) => m.localPath);
   const ratio = (a: number, b: number) => (b ? Number((a / b).toFixed(3)) : 0);
   const mangled = { app: { total: 0, mangled: 0 }, library: { total: 0, mangled: 0 } };
@@ -1515,11 +1540,15 @@ function measureQuality(tree: OutputTree, modules: Manifest["modules"], files: F
   const hasModules = tree.all().some((f) => f.kind === "module");
   for (const file of tree.all()) {
     if ((file.kind !== "module" && file.kind !== "script") || file.path.includes("/_missing/")) continue;
-    const counts = mangledRatio(file.content, file.path);
     const library = file.library || /(^|\/)(node_modules|vendor)\//.test(file.path) || (file.kind === "script" && hasModules);
     const bucket = library ? mangled.library : mangled.app;
-    bucket.total += counts.total;
-    bucket.mangled += counts.mangled;
+    try {
+      const counts = mangledRatio(file.content, file.path);
+      bucket.total += counts.total;
+      bucket.mangled += counts.mangled;
+    } catch (err) {
+      ctx.report.warn({ stage: "quality", path: file.path, message: errorMessage(err) });
+    }
     const found = boilerplateCounts(file.content);
     for (const key of Object.keys(boilerplate) as Array<keyof typeof boilerplate>) boilerplate[key] += found[key];
   }

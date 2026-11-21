@@ -213,11 +213,16 @@ export class Browser {
   constructor(
     private readonly options: BrowserOptions,
     private readonly log: Logger,
+    private readonly recording?: ReadonlyMap<string, BrowserResponse>,
   ) {
     this.limit = createLimiter(Math.max(1, options.concurrency));
   }
 
   get(url: string, type: ResourceType, ctx: RequestContext): Promise<BrowserResponse> {
+    if (this.recording) {
+      const recorded = this.recording.get(url);
+      return recorded ? Promise.resolve(recorded) : Promise.reject(new HttpError(`not recorded in HAR: ${url}`));
+    }
     const key = `${type}|${url}`;
     const cached = this.inflight.get(key);
     if (cached) return cached;
@@ -337,7 +342,7 @@ export class Browser {
     } catch (err) {
       entry.timeMs = Math.round(performance.now() - began);
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-        entry.error = `timeout after ${this.options.timeoutMs}ms`;
+        entry.error = entry.status ? `response body timeout after ${this.options.timeoutMs}ms (HTTP ${entry.status})` : `response headers timeout after ${this.options.timeoutMs}ms`;
         throw new HttpError(entry.error, undefined, true);
       }
       entry.error = err instanceof Error ? err.message : String(err);

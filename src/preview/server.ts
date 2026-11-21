@@ -28,6 +28,7 @@ interface ViteModule {
 const root = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const preview: Preview = JSON.parse(await readFile(resolve(root, ".unbundle/preview.json"), "utf8"));
 const routes = new Map<string, Route>(preview.routes.map(([url, path, type]) => [url, { path, type }]));
+const replay = new Set((preview.replay ?? []).map((url) => url.split("?")[0]));
 const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? "4173");
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("PORT must be a valid port number");
@@ -51,7 +52,7 @@ async function startVite() {
     configureServer(server: ViteMiddleware) {
       server.middlewares.use((req, res, next) => {
         const url = parseUrl(req);
-        const target = url && (routes.get(url.pathname + url.search) ?? routes.get(url.pathname));
+        const target = url && (routes.get(url.pathname + url.search) ?? (!replay.has(url.pathname) ? routes.get(url.pathname) : undefined));
         if (target && !/^text\/html/i.test(target.type) && !/javascript/i.test(target.type) && !url.pathname.startsWith("/src/")) {
           void send(target, req, res, next);
         } else next();
@@ -114,7 +115,8 @@ function startStatic() {
       return;
     }
     const fallback = preview.spa && req.headers.accept?.includes("text/html") ? routes.get(preview.entry) : null;
-    const target = routes.get(pathname + url.search) ?? routes.get(pathname) ?? routes.get(pathname.endsWith("/") ? pathname.slice(0, -1) : pathname + "/") ?? fallback;
+    const exact = routes.get(pathname + url.search);
+    const target = exact ?? (!replay.has(pathname) ? routes.get(pathname) ?? routes.get(pathname.endsWith("/") ? pathname.slice(0, -1) : pathname + "/") ?? fallback : null);
     if (target) void send(target, req, res, missing);
     else missing();
   });

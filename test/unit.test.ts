@@ -369,6 +369,25 @@ describe("browser emulation", () => {
     expect(linkHeaderResources(new Headers({ link: "</m.js>; rel=modulepreload" }), new URL("https://h.test/")).map((r) => r.type)).toEqual(["module"]);
   });
 
+  test("resolves runtime resources against their browser request bases", () => {
+    const refs = scriptResources(`
+      self.nextDefineUri = location.origin + "/chunks/app.js";
+      define(["require"], require => require("./editor"));
+      class Messenger { constructor(url) { this.url = url; } open() { return new Worker(this.url); } }
+      new (class extends Messenger { constructor() { super("js/worker.js"); } })();
+      navigator.serviceWorker.register("sw.js");
+      fetch("demo/example.svg");
+      new URL("/chunks/codec.wasm", module.uri);
+    `, "https://h.test/tools/js/page.js", false, "https://h.test/tools/").map((ref) => ref.url);
+    expect(refs.sort()).toEqual([
+      "https://h.test/chunks/codec.wasm",
+      "https://h.test/chunks/editor.js",
+      "https://h.test/tools/demo/example.svg",
+      "https://h.test/tools/js/worker.js",
+      "https://h.test/tools/sw.js",
+    ]);
+  });
+
   test("cookie jar keeps scope, expiry and SameSite", () => {
     const jar = new CookieJar();
     const url = new URL("https://h.test/t/app");
