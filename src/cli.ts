@@ -14,6 +14,7 @@ Renaming, formatting, source maps and JSX recovery are always on.
       --depth <n>         link depth (default: 2, 0 = only the given page)
       --max-pages <n>     pages to crawl inside the site scope (default: 20)
       --include-external  also load third-party scripts
+      --learn             verify and cache missing npm package fingerprints
       --standalone        also write html/<page>.standalone.html marking which DOM
                           each React Client Component rendered (Next.js App Router)
   -v, --verbose           log every request
@@ -52,6 +53,7 @@ export function parseCli(argv: string[]): { options: Options; verbose: boolean; 
       depth: { type: "string" },
       "include-external": { type: "boolean", default: false },
       standalone: { type: "boolean", default: false },
+      learn: { type: "boolean", default: false },
       verbose: { type: "boolean", short: "v", default: false },
       quiet: { type: "boolean", short: "q", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -83,6 +85,7 @@ export function parseCli(argv: string[]): { options: Options; verbose: boolean; 
       crawlDepth: int("depth", values.depth, 2, 0),
       includeExternal: values["include-external"],
       standalone: values.standalone,
+      learn: values.learn,
     },
   };
 }
@@ -113,6 +116,7 @@ async function main(): Promise<number> {
       ["source maps", `${s.sourceMaps.maps} (${s.sourceMaps.sources} files)`],
       ["strings", `${s.strings} (${s.endpoints} endpoints)`],
       ["issues", s.errors || s.warnings ? `${count(s.errors, "error")}, ${count(s.warnings, "warning")} (.unbundle/manifest.json#errors, #warnings)` : "none"],
+      ["recovery", manifest.recovery?.length ? `${count(manifest.recovery.length, "issue")} (.unbundle/manifest.json#recovery)` : "no issues reported"],
       [
         "coverage",
         coverage.status === "complete"

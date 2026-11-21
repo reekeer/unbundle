@@ -1,13 +1,12 @@
 import type { NodePath } from "@babel/traverse";
 import { posix } from "node:path";
-import { DIRS, relativeImport, safeSegment, type OutputTree } from "../output.ts";
+import { DIRS, OutputTree, relativeImport, safeSegment } from "../output.ts";
 import type { Manifest, OutputFile } from "../types.ts";
 import { literalKey, parseProgram, print, t, traverse } from "../unpack/ast.ts";
 import { UTILITY_CLASS } from "./analyze.ts";
 import { camel, capitalize, jsxRoot, RESERVED, tidyAst } from "./rename.ts";
 import type { LibraryComponent } from "./fingerprint.ts";
 import { mergeImports, packageNamespaceCode, reactNamespaceCode } from "./cleanup.ts";
-import { angularSourceCode } from "./angular.ts";
 import { hasApiPath, nameClasses, type ClassName } from "./classes.ts";
 import { algorithmTopic } from "./crypto.ts";
 import { componentOptions, composableSource, inferVueRoles, isVueApi, renameVueHelpers, renderFunction, renderTemplate, type Roles, type SfcContext } from "./vue.ts";
@@ -1653,8 +1652,10 @@ function plan(file: OutputFile, program: NodePath<t.Program>, ast: t.File, page:
     const extension = vue ? ".vue" : jsx ? ".jsx" : ".js";
     const ng = angular.get(u);
     let path = u === appConfig ? posix.join(jsRoot, "app.config.js") : routed ? posix.join(jsRoot, `${routed}${extension}`) : ng ? posix.join(jsRoot, `${ng.path}${extension}`) : posix.join(jsRoot, folder === "hooks" && vueModule ? "composables" : folder, `${fileName}${extension}`);
-    if (routed) for (let n = 2; taken.has(path.toLowerCase()); n++) path = posix.join(jsRoot, `${routed}-${n}${extension}`);
-    if (routed) taken.add(path.toLowerCase());
+    if (routed || ng) {
+      const base = path.slice(0, -extension.length);
+      for (let n = 2; pieces.some((piece) => piece.path === path); n++) path = `${base}~${n}${extension}`;
+    }
     for (const m of members) {
       const known = m !== u ? classNames.get(m.name) : undefined;
       if (!known || !isValidName(known.name) || program.scope.hasBinding(known.name)) continue;
@@ -3098,6 +3099,17 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
 
   const dropped = new Set<string>();
   const outputs: Array<{ path: string; content: string; jsx: boolean }> = [];
+  const paths = new OutputTree();
+  for (const file of all) paths.add(file);
+  let reservation = 0;
+  const reserve = (path: string) => paths.add({ path, content: `\0${reservation++}`, kind: "module", renamable: false }).path;
+  for (const plan of plans.values()) {
+    if (plan.outPath !== plan.path) {
+      const previous = plan.outPath;
+      plan.outPath = reserve(previous);
+      for (const target of plan.exportsTo.values()) if (target.path === previous) target.path = plan.outPath;
+    }
+  }
   const scoped = attachScopedStyles(plans, all);
   for (const file of all) if (file.kind === "style" && scoped.size) file.content = removeScopedRules(file.content, scoped);
   const forwarded = new Map<string, string>();
@@ -3112,7 +3124,7 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
     if (sole) forwarded.set(plan.path, sole);
     else barrels.add(plan.path);
   }
-  const taken = new Set(all.map((f) => f.path));
+  const taken = new Set(paths.all().map((f) => f.path));
   for (const plan of plans.values()) {
     if (plan.vendor || plan.route === undefined || !plan.pieces.some((p) => p.vue || p.folder === "pages") || barrels.has(plan.path) || !prunedRemainder(plan).some((st) => !t.isExportNamedDeclaration(st) || !!st.declaration)) continue;
     const words = posix.basename(plan.path).replace(/\.[jt]sx?$/, "").replace(/Page$/, "").match(/[A-Z][a-z0-9]*|[a-z0-9]+/g) ?? [];
@@ -3122,6 +3134,7 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
       const candidate = posix.join(DIRS.js, "functions", `${base}.js`);
       if (!base || taken.has(candidate) || used.get("functions")!.has(base.toLowerCase())) continue;
       taken.add(candidate);
+      reserve(candidate);
       used.get("functions")!.add(base.toLowerCase());
       plan.outPath = candidate;
       break;
@@ -3133,23 +3146,33 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
     let candidate = `${base}.js`;
     for (let n = 2; taken.has(candidate); n++) candidate = `${base}-${n}.js`;
     taken.add(candidate);
-    plan.outPath = candidate;
+    plan.outPath = reserve(candidate);
+  }
+  for (const plan of plans.values()) for (const piece of plan.pieces) {
+    const previous = piece.path;
+    if (previous === plan.path && plan.outPath !== plan.path) continue;
+    piece.path = reserve(previous);
+    for (const target of plan.exportsTo.values()) if (target.path === previous) target.path = piece.path;
+    if (forwarded.get(plan.path) === previous) forwarded.set(plan.path, piece.path);
+  }
+  // Vue conversion can change the extension. Resolve it before emitting siblings and barrels.
+  for (const plan of plans.values()) for (const piece of plan.pieces) {
+    if (!piece.vue) continue;
+    try {
+      sfcCode(piece, plan);
+    } catch {
+      const previous = piece.path;
+      const host = piece.units.find((u) => u.name === piece.name)!;
+      piece.vue = undefined;
+      piece.path = reserve(previous.replace(/\.vue$/, ".js"));
+      for (const [exported, target] of plan.exportsTo) if (target.path === previous) plan.exportsTo.set(exported, { path: piece.path, name: exported === "default" || host.exported.includes(exported) ? exported : host.name });
+      for (const [from, to] of forwarded) if (from === plan.path && to === previous) forwarded.set(from, piece.path);
+    }
   }
   for (const plan of plans.values()) {
     const parts: string[] = [];
     for (const piece of plan.pieces) {
-      let content: string;
-      try {
-        content = pieceCode(piece, plan);
-      } catch (err) {
-        if (!piece.vue) throw err;
-        const previous = piece.path;
-        const host = piece.units.find((u) => u.name === piece.name)!;
-        piece.vue = undefined;
-        piece.path = previous.replace(/\.vue$/, ".js");
-        for (const [exported, target] of plan.exportsTo) if (target.path === previous) plan.exportsTo.set(exported, { path: piece.path, name: exported === "default" || host.exported.includes(exported) ? exported : host.name });
-        content = pieceCode(piece, plan);
-      }
+      const content = pieceCode(piece, plan);
       outputs.push({ path: piece.path, content, jsx: piece.jsx });
       parts.push(piece.path);
     }
@@ -3167,13 +3190,7 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
   for (const path of dropped) tree.remove(path);
   for (const out of outputs) {
     const vendor = [...plans.values()].some((p) => p.vendor !== null && p.outPath === out.path && p.outPath !== p.path);
-    const stored = tree.add({ path: out.path, content: out.content, kind: "module", renamable: false, ...(vendor ? { library: true } : {}) });
-    if (stored.path !== out.path) {
-      for (const plan of plans.values()) {
-        for (const piece of plan.pieces) if (piece.path === out.path) piece.path = stored.path;
-        for (const target of plan.exportsTo.values()) if (target.path === out.path) target.path = stored.path;
-      }
-    }
+    tree.add({ path: out.path, content: out.content, kind: "module", renamable: false, ...(vendor ? { library: true } : {}) });
   }
   for (const file of tree.all()) {
     if (file.kind !== "module" && file.kind !== "script") continue;
@@ -3185,7 +3202,6 @@ export function organizeModules(tree: OutputTree, modules: Manifest["modules"], 
     if (!file || file.path.endsWith(".vue")) continue;
     try {
       file.content = packageNamespaceCode(reactNamespaceCode(file.content));
-      if (/static\s+ɵ(cmp|pipe|prov)\b/.test(file.content)) file.content = angularSourceCode(file.content) ?? file.content;
     } catch {
       continue;
     }

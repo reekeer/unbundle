@@ -15,6 +15,7 @@ export interface Options {
   crawlDepth: number;
   includeExternal: boolean;
   standalone?: boolean;
+  learn?: boolean;
 }
 
 export type ResourceType = "document" | "script" | "module" | "style" | "manifest" | "worker" | "sourcemap" | "fetch" | "other";
@@ -41,6 +42,7 @@ export interface Asset {
   contentType: string;
   headers: Headers;
   body: string;
+  bytes?: Uint8Array;
 }
 
 export interface SourceFile {
@@ -113,6 +115,7 @@ export interface BundlerAdapter {
   readonly name: string;
   detect(page: Page): Detection;
   detectAssets?(assets: readonly Asset[]): Detection;
+  packageVersions?(page: Page, assets: readonly Asset[]): ReadonlyMap<string, string>;
   collectAssets(page: Page): AssetRef[];
   discover?(ctx: DiscoverContext): AssetRef[];
   scopePath?(page: Page): string | null;
@@ -130,6 +133,7 @@ export type OutputKind = "page" | "data" | "source" | "module" | "style" | "scri
 export interface OutputFile {
   path: string;
   content: string;
+  bytes?: Uint8Array;
   kind: OutputKind;
   renamable: boolean;
   library?: boolean;
@@ -176,6 +180,14 @@ export interface Issue {
   message: string;
 }
 
+export interface Preview {
+  mode: "vite" | "static";
+  entry: string;
+  editable: string;
+  spa: boolean;
+  routes: Array<[url: string, path: string, contentType: string]>;
+}
+
 export interface FileEntry {
   url: string;
   localPath: string | null;
@@ -197,7 +209,7 @@ export interface Manifest {
   createdAt: string;
   input: string;
   finalUrl: string;
-  bundler: { adapter: string | null; score: number; evidence: string[]; forced: boolean };
+  bundler: { adapter: string | null; score: number; evidence: string[]; forced: boolean; formats?: string[]; framework?: string; frameworkVersion?: string };
   summary: {
     pages: number;
     requests: number;
@@ -232,6 +244,9 @@ export interface Manifest {
     deps: string[];
   }>;
   coverage: Coverage;
+  recovery?: Issue[];
+  learnedPackages?: Array<{ package: string; version: string }>;
+  preview?: Preview;
   findings: Array<{ kind: "crypto" | "proof-of-work" | "webcrypto" | "auth" | "captcha" | "mini-app"; name: string; file: string; line: number; detail: string }>;
   errors: Issue[];
   warnings: Issue[];

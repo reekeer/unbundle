@@ -1673,7 +1673,7 @@ export function dedupeExports(tree: OutputTree): number {
   for (const file of tree.all()) {
     if ((file.kind !== "module" && file.kind !== "script") || !/\.m?[jt]sx?$/.test(file.path) || !/export/.test(file.content)) continue;
     const seen = new Set<string>();
-    for (const match of file.content.matchAll(/export\s+(?:async\s+)?(?:const|let|var|function\*?|class)\s+([A-Za-z_$][\w$]*)/g)) seen.add(match[1]!);
+    for (const match of file.content.matchAll(/export\s+(?:async\s+)?(?:const|let|var|function\*?|class)\s+([\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*)/gu)) seen.add(match[1]!);
     for (const match of file.content.matchAll(/export\s+(?:const|let|var)\s*([{[])/g)) for (const name of patternNames(file.content, match.index! + match[0].length - 1)) seen.add(name);
     if (/export\s+default\b/.test(file.content)) seen.add("default");
     let changed = false;

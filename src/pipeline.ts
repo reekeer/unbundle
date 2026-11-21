@@ -29,13 +29,17 @@ import { adoptPackageAliases, adoptVendorAliases, collapseReexportShims, dedupeE
 import { tidyScript, tidySfc } from "./refine/sfc.ts";
 import { aliasImports, detectTypeScript, projectLayout } from "./layout.ts";
 import { writeProjectFiles } from "./project.ts";
+import { writePreview } from "./preview/write.ts";
 import { apiGroups, functionGroups, mergeModules } from "./refine/merge.ts";
 import { absorbLoneClient, absorbShared, nameStoreFiles } from "./refine/absorb.ts";
 import { extractLocaleDictionaries } from "./refine/localize.ts";
 import { readablePage } from "./refine/html.ts";
 import { reconcileStreaming } from "./standalone/extractors/next-rsc.ts";
 import { autoWorkers, refineAll } from "./refine/worker.ts";
-import type { Asset, AssetRef, BundlerAdapter, ChunkEnv, Coverage, DiscoverContext, FileEntry, LoaderFinding, Manifest, ModuleRecord, Options, Page, Quality, SourceMapResult, StylesOutput } from "./types.ts";
+import { angularSourceCode } from "./refine/angular.ts";
+import { ModuleGraph } from "./refine/module-graph.ts";
+import { learnFingerprints } from "./refine/learn.ts";
+import type { Asset, AssetRef, BundlerAdapter, ChunkEnv, Coverage, DiscoverContext, FileEntry, Issue, LoaderFinding, Manifest, ModuleRecord, Options, Page, Quality, SourceMapResult, StylesOutput } from "./types.ts";
 import { decodeDataUrl, looksLikeSourceMap, sourceMapCandidates, unpackSourceMap } from "./unpack/sourcemap.ts";
 
 const MIN_ADAPTER_SCORE = 0.3;
@@ -67,31 +71,52 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   let { adapter, detection } = detect(ctx, start, available);
 
   log.start("3/9 crawl pages");
-  const scope = crawlScope(start, adapter);
-  const pages = await crawl(ctx, start, scope);
+  let scope = crawlScope(start, adapter);
+  let pages = await crawl(ctx, start, scope);
 
   log.start("4/9 load resources");
   let { assets, entries } = await loadResources(ctx, adapter, pages);
+  if (!options.adapter) {
+    const resolved = detect(ctx, start, available, [...assets.values()].filter(isScript));
+    const changedAdapter = adapter !== resolved.adapter;
+    ({ adapter, detection } = resolved);
+    if (changedAdapter) {
+      const resolvedScope = crawlScope(start, adapter);
+      if (resolvedScope !== scope) {
+        scope = resolvedScope;
+        pages = await crawl(ctx, start, scope);
+      }
+      ({ assets, entries } = await loadResources(ctx, adapter, pages));
+    }
+    if (detection.adapter) log.success(`detected bundler: ${detection.adapter}`);
+    else log.warn("no known bundler recognized, using generic adapter");
+    if (detection.evidence.length) log.debug(`score ${detection.score.toFixed(2)}: ${detection.evidence.join("; ")}`);
+  }
   const routed = await crawlRoutesFromCode(ctx, start, scope, pages, assets);
   if (routed.length) {
     pages.push(...routed);
     ({ assets, entries } = await loadResources(ctx, adapter, pages));
   }
-  if (!detection.adapter && !ctx.options.adapter) {
-    const byAssets = detectFromAssets(ctx, [...assets.values()], available);
-    if (byAssets) {
-      ({ adapter, detection } = byAssets);
-      ({ assets, entries } = await loadResources(ctx, adapter, pages));
-    }
-  }
-
   log.start("5/9 source maps");
   const maps = await findSourceMaps(ctx, adapter, assets);
 
   log.start("6/9 unpack");
   const layout = new Layout(start.url, scope, staticPrefix(start.url, assets));
   const tree = new OutputTree();
-  const unpacked = unpack(ctx, adapter, pages, assets, maps, layout, tree, await loadFingerprints());
+  const baseFingerprints = await loadFingerprints(process.env.UNBUNDLE_FINGERPRINTS);
+  const scripts = [...assets.values()].filter(isScript);
+  const versionHints = adapter.packageVersions?.(start, scripts) ?? new Map<string, string>();
+  const fingerprints = options.learn ? await learnFingerprints(baseFingerprints, scripts, maps.values(), versionHints, (message) => log.debug(message)) : baseFingerprints;
+  const originalVersions = packageVersions(baseFingerprints);
+  const learnedPackages = [...packageVersions(fingerprints)].filter(([name, version]) => originalVersions.get(name) !== version).map(([name, version]) => ({ package: name, version }));
+  if (learnedPackages.length) log.success(`learned npm fingerprints: ${learnedPackages.map(({ package: name, version }) => `${name}@${version}`).join(", ")}`);
+  const unpacked = unpack(ctx, adapter, pages, assets, maps, layout, tree, fingerprints);
+  const projectVersions = new Map([...packageVersions(fingerprints), ...unpacked.modules.flatMap((m) => (m.package?.version ? [[m.package.name, m.package.version] as const] : [])), ...versionHints]);
+  const availableExports = (specifier: string, withDefault = false) => {
+    const parts = specifier.split("/");
+    const pkg = parts.slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
+    return entryExports(fingerprints, specifier, withDefault, projectVersions.get(pkg));
+  };
 
   log.start("7/9 refine");
   const renamed = await refine(ctx, unpacked.modules, tree);
@@ -103,12 +128,12 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
       ctx.report.warn({ stage: "crypto", path: file.path, message: errorMessage(err) });
     }
   }
-  const { modules, missing, libraryFunctions, libraryPackages, libraryNamespaces, pageFiles, routeFiles } = placeModules(ctx, adapter, pages, assets, unpacked, layout, tree, await loadFingerprints());
+  const checkedPackages = new Set([...learnedPackages.map(({ package: name }) => name), ...versionHints.keys()]);
+  const { modules, missing, libraryFunctions, libraryPackages, libraryNamespaces, pageFiles, routeFiles } = placeModules(ctx, adapter, pages, assets, unpacked, layout, tree, fingerprints, availableExports, checkedPackages);
   const styles = writeStyles(ctx, unpacked, layout, tree);
-  const fingerprints = await loadFingerprints();
   confirmReadableFunctions(tree, modules, libraryFunctions, fingerprints);
   const present = new Set([...libraryPackages, ...modules.flatMap((m) => (m.identifiedAs ? [m.identifiedAs.package] : []))]);
-  const bareFunctions = new Map([...libraryFunctions].filter(([name, pkg]) => pkg && name.length > 2 && (present.has(pkg) || pkg.startsWith("@vue/")) && entryExports(fingerprints, pkg).has(name)).map(([name, pkg]) => [name, pkg.startsWith("@vue/") ? "vue" : pkg] as const));
+  const bareFunctions = new Map([...libraryFunctions].filter(([name, pkg]) => pkg && name.length > 2 && (present.has(pkg) || pkg.startsWith("@vue/")) && availableExports(pkg).has(name)).map(([name, pkg]) => [name, pkg.startsWith("@vue/") ? "vue" : pkg] as const));
   const routePages = new Set<string>();
   for (const file of tree.all()) {
     if (file.kind !== "module" || file.library || file.path.startsWith(`${DIRS.libraries}/`) || !/\.m?jsx?$/.test(file.path)) continue;
@@ -123,7 +148,7 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   if (detection.adapter === null) relocateManifest(safe(ctx, "scripts", () => flattenScripts(tree), new Map<string, string>()), modules, missing, [...entries, ...unpacked.entries], unpacked.sources);
 
   const packageExport = (pkg: string, name: string) => {
-    for (const candidate of pkg.startsWith("@vue/") ? ["vue", pkg] : [pkg]) if (entryExports(fingerprints, candidate).has(name)) return candidate;
+    for (const candidate of pkg.startsWith("@vue/") ? ["vue", pkg] : [pkg]) if (availableExports(candidate).has(name)) return candidate;
     return null;
   };
   safe(ctx, "exports", () => dedupeExports(tree), 0);
@@ -175,7 +200,7 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   safe(ctx, "layout", () => dropReexportLeftovers(tree), 0);
   if (adapter.name === "astro") await rebuildAstro(ctx, tree, pages, layout, modules, moved);
   relocateManifest(stashPages(tree, !!options.standalone), modules, missing, [...entries, ...unpacked.entries], unpacked.sources);
-  safe(ctx, "project files", () => writeProjectFiles(tree, { host: start.url.hostname, adapter: detection.adapter, typescript, versions: new Map([...packageVersions(fingerprints), ...unpacked.modules.flatMap((m) => (m.package?.version ? [[m.package.name, m.package.version] as const] : []))]), html: start.html, base: scope === "/" ? "/" : `${scope.replace(/\/+$/, "")}/` }), []);
+  safe(ctx, "project files", () => writeProjectFiles(tree, { host: start.url.hostname, adapter: detection.adapter, typescript, versions: projectVersions, html: start.html, base: scope === "/" ? "/" : `${scope.replace(/\/+$/, "")}/` }), []);
   if (detection.adapter === "vite" && tree.all().some((f) => f.path === "index.html")) for (const file of tree.all()) if (/^src\/_chunks\/scripts\/inline\//.test(file.path)) tree.remove(file.path);
 
   safe(ctx, "exports", () => dedupeExports(tree), 0);
@@ -187,19 +212,34 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   safe(ctx, "exports", () => tidyExports(tree), 0);
   for (const root of ["src", "app"]) safe(ctx, "i18n", () => extractLocaleDictionaries(tree, root), 0);
   safe(ctx, "layout", () => aliasImports(tree, detection.adapter), 0);
+  safe(ctx, "exports", () => dedupeExports(tree), 0);
+  const recovery: Issue[] = [];
+  const graph = new ModuleGraph(tree.all());
+  for (const file of tree.all()) {
+    if ((file.kind !== "module" && file.kind !== "script") || file.library || !/static\s+ɵ(cmp|pipe|prov|dir)\b/.test(file.content)) continue;
+    const report = (message: string) => recovery.push({ stage: "angular", path: file.path, message });
+    try {
+      file.content = angularSourceCode(file.content, graph.angularImports(file.path), report, (name) => graph.projectionSelectors(file.path, name)) ?? file.content;
+    } catch (err) {
+      report(errorMessage(err));
+    }
+  }
+  const files = [...entries, ...unpacked.entries].sort((a, b) => a.url.localeCompare(b.url));
+  const preview = await writePreview(tree, pages, assets, files, detection.adapter);
   log.start("8/9 format");
   await formatAll(ctx, tree);
 
   log.start("9/9 write");
+  recovery.push(...new ModuleGraph(tree.all()).issues());
+  if (recovery.length) log.warn(`${count(recovery.length, "recovery issue")} in the output, see .unbundle/manifest.json#recovery`);
   const strings = collectStrings(tree);
   const scanned = tree.all().filter((f) => (f.kind === "module" || f.kind === "script") && /\.(m?js|jsx)$/.test(f.path));
   const own = tree.all().filter((f) => (f.kind === "module" || f.kind === "script" || f.kind === "page") && /\.(m?[jt]sx?|vue|svelte|astro|html)$/.test(f.path) && !/(^|\/)(vendor|node_modules)\//.test(f.path));
   const findings = [...scanned.flatMap((f) => scanCrypto(f.path, f.content)), ...own.flatMap((f) => scanServices(f.path, f.content))];
   for (const finding of findings.filter((f) => f.kind === "proof-of-work")) log.warn(`proof-of-work: ${finding.file}:${finding.line} (${finding.name})`);
-  const coverage = coverageReport(ctx, adapter, { pages, all: assets, fresh: [] }, tree, entries, missing, scope, libraryStrings(await loadFingerprints()), libraryFunctions);
+  const coverage = coverageReport(ctx, adapter, { pages, all: assets, fresh: [] }, tree, entries, missing, scope, libraryStrings(fingerprints), libraryFunctions);
   if (coverage.status === "possibly-incomplete") log.warn("some code may be missing, see .unbundle/manifest.json#coverage");
   const outDir = join(options.outDir, hostDir(start.url));
-  const files = [...entries, ...unpacked.entries].sort((a, b) => a.url.localeCompare(b.url));
   const quality = measureQuality(tree, modules, files, libraryPackages);
   if (quality.mangledIdentifiers.app >= 0.35) log.warn(`${Math.round(quality.mangledIdentifiers.app * 100)}% of the site's identifiers are still 1-2 letters, see .unbundle/manifest.json#summary.quality`);
   for (const finding of findings.filter((f) => f.kind === "auth" || f.kind === "captcha" || f.kind === "mini-app")) log.info(`${finding.name}: ${finding.file}:${finding.line}`);
@@ -208,7 +248,7 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
     createdAt: new Date().toISOString(),
     input: options.url.href,
     finalUrl: start.url.href,
-    bundler: detection,
+    bundler: { ...detection, ...(adapter.name === "angular" ? { framework: "angular", frameworkVersion: versionHints.get("@angular/core") } : {}), formats: [...unpacked.formats].sort() },
     summary: {
       pages: pages.length,
       requests: ctx.browser.network.length,
@@ -234,6 +274,9 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
     sources: unpacked.sources,
     modules,
     coverage,
+    recovery,
+    preview,
+    ...(options.learn ? { learnedPackages } : {}),
     findings,
     errors: ctx.report.errors,
     warnings: ctx.report.warnings,
@@ -249,7 +292,7 @@ export async function run(options: Options, log: Logger, adapters?: BundlerAdapt
   return { outDir, manifest };
 }
 
-function detect(ctx: Run, page: Page, adapters: BundlerAdapter[]) {
+function detect(ctx: Run, page: Page, adapters: BundlerAdapter[], scripts: Asset[] = []) {
   const forced = ctx.options.adapter;
   if (forced) {
     const adapter = forced === genericAdapter.name ? genericAdapter : adapters.find((a) => a.name === forced);
@@ -258,27 +301,22 @@ function detect(ctx: Run, page: Page, adapters: BundlerAdapter[]) {
     ctx.log.info(`adapter forced: ${adapter.name}`);
     return { adapter, detection: { adapter: adapter.name, score, evidence, forced: true } };
   }
-  const ranked = adapters.map((adapter) => ({ adapter, result: adapter.detect(page) })).sort((a, b) => b.result.score - a.result.score);
+  const ranked = adapters.map((adapter) => {
+    const html = adapter.detect(page);
+    const assets = scripts.length && adapter.detectAssets ? safe(ctx, `${adapter.name}.detectAssets`, () => adapter.detectAssets!(scripts), null) : null;
+    return {
+      adapter,
+      htmlScore: html.score,
+      result: {
+        score: Math.max(html.score, assets?.score ?? 0),
+        evidence: [...new Set([...html.evidence, ...(assets?.evidence ?? [])])],
+      },
+    };
+  }).sort((a, b) => b.result.score - a.result.score || b.htmlScore - a.htmlScore);
   const best = ranked[0];
   if (!best || best.result.score < MIN_ADAPTER_SCORE) {
-    ctx.log.warn("no known bundler recognized, using generic adapter");
     return { adapter: genericAdapter, detection: { adapter: null, score: best?.result.score ?? 0, evidence: best?.result.evidence ?? [], forced: false } };
   }
-  ctx.log.success(`detected bundler: ${best.adapter.name}`);
-  ctx.log.debug(`score ${best.result.score.toFixed(2)}: ${best.result.evidence.join("; ")}`);
-  return { adapter: best.adapter, detection: { adapter: best.adapter.name, score: best.result.score, evidence: best.result.evidence, forced: false } };
-}
-
-function detectFromAssets(ctx: Run, assets: Asset[], adapters: BundlerAdapter[]) {
-  const scripts = assets.filter((a) => isScript(a));
-  const ranked = adapters
-    .filter((a) => a.detectAssets)
-    .map((adapter) => ({ adapter, result: safe(ctx, `${adapter.name}.detectAssets`, () => adapter.detectAssets!(scripts), { score: 0, evidence: [] }) }))
-    .sort((a, b) => b.result.score - a.result.score);
-  const best = ranked[0];
-  if (!best || best.result.score < MIN_ADAPTER_SCORE) return null;
-  ctx.log.success(`detected bundler: ${best.adapter.name} (from the loaded scripts)`);
-  ctx.log.debug(`score ${best.result.score.toFixed(2)}: ${best.result.evidence.join("; ")}`);
   return { adapter: best.adapter, detection: { adapter: best.adapter.name, score: best.result.score, evidence: best.result.evidence, forced: false } };
 }
 
@@ -462,7 +500,7 @@ async function loadResources(ctx: Run, adapter: BundlerAdapter, pages: Page[]): 
     results.forEach((result, i) => {
       const ref = batch[i]!;
       if (result.status === "fulfilled") {
-        const asset = { ref, finalUrl: result.value.finalUrl, contentType: result.value.contentType, headers: result.value.headers, body: result.value.body };
+        const asset = { ref, finalUrl: result.value.finalUrl, contentType: result.value.contentType, headers: result.value.headers, body: result.value.body, ...(result.value.bytes ? { bytes: result.value.bytes } : {}) };
         assets.set(ref.url, asset);
         fresh.push(asset);
         return;
@@ -562,11 +600,12 @@ interface Unpacked {
   sources: Manifest["sources"];
   modules: ModuleRecord[];
   chunks: number;
+  formats: Set<string>;
   styles: Array<{ url: string; finalUrl: string; css: string }>;
 }
 
 function unpack(ctx: Run, adapter: BundlerAdapter, pages: Page[], assets: Map<string, Asset>, maps: Map<string, SourceMapResult>, layout: Layout, tree: OutputTree, fingerprints: FingerprintDb): Unpacked {
-  const out: Unpacked = { entries: [], sources: [], modules: [], chunks: 0, styles: [] };
+  const out: Unpacked = { entries: [], sources: [], modules: [], chunks: 0, formats: new Set(), styles: [] };
   const seenBodies = new Map<string, string>();
   const env: ChunkEnv = { importMap: new Map(pages.flatMap((page) => [...importMap(page)])) };
 
@@ -587,7 +626,7 @@ function unpack(ctx: Run, adapter: BundlerAdapter, pages: Page[], assets: Map<st
     const url = asset.ref.url;
     const base = { url, type: asset.ref.type, initiator: asset.ref.initiator };
     try {
-      const raw = tree.add({ path: layout.raw(url), content: asset.body, kind: "raw", renamable: false });
+      const raw = tree.add({ path: layout.raw(url), content: asset.body, kind: "raw", renamable: false, ...(asset.bytes ? { bytes: asset.bytes } : {}) });
       const map = maps.get(url);
       if (map) {
         if (!map.mapUrl.startsWith("data:")) tree.add({ path: layout.raw(map.mapUrl), content: map.raw, kind: "raw", renamable: false });
@@ -625,6 +664,7 @@ function unpack(ctx: Run, adapter: BundlerAdapter, pages: Page[], assets: Map<st
       }
       if (chunk?.modules.length) {
         out.chunks++;
+        out.formats.add(chunk.format);
         const modules = chunk.modules.flatMap((mod) => splitBundle(ctx, mod, fingerprints));
         out.modules.push(...modules);
         out.entries.push({ ...base, localPath: raw.path, status: "ok", via: "unpack", modules: modules.map((m) => m.id), ...parse });
@@ -986,6 +1026,8 @@ function placeModules(
   layout: Layout,
   tree: OutputTree,
   fingerprints: FingerprintDb,
+  availableExports: (specifier: string, withDefault?: boolean) => ReadonlySet<string>,
+  checkedPackages: ReadonlySet<string>,
 ): Placed {
   const keyOf = (namespace: string, id: string) => `${namespace}\u0000${id}`;
   const unique = new Map<string, ModuleRecord>();
@@ -1229,7 +1271,7 @@ function placeModules(
   for (const [key, icons] of iconModules) specifierOf.set(key, icons.source);
   const bareCandidates = new Map<string, string[]>();
   for (const pkg of new Set([...identified.values()].map((l) => l.package))) {
-    for (const name of entryExports(fingerprints, pkg)) bareCandidates.set(name, [...(bareCandidates.get(name) ?? []), pkg]);
+    for (const name of availableExports(pkg)) bareCandidates.set(name, [...(bareCandidates.get(name) ?? []), pkg]);
   }
   const defaultNames = new Map([...Object.values(PACKAGES).map((p) => [p.specifier, p.defaultName] as const), ...Object.entries(DEFAULT_IMPORTS)]);
 
@@ -1276,22 +1318,22 @@ function placeModules(
           const target = keyOf(mod.namespace, resolveAlias(mod.namespace, id));
           if (!identified.has(target)) {
             const pkg = name !== "default" && name.length > 2 ? libraryFunctions.get(name) : undefined;
-            if (!pkg || !entryExports(fingerprints, pkg).has(name)) return null;
+            if (!pkg || !availableExports(pkg).has(name)) return null;
             if (!pkg.startsWith("@vue/") && (naming.libraryPackages.get(pkg) ?? 0) < 3 && ![...identified.values()].some((l) => l.package === pkg)) return null;
             return pkg.startsWith("@vue/") ? "vue" : pkg;
           }
           if (name === "default") {
             const pkg = identified.get(target)!.package;
-            return entryExports(fingerprints, pkg, true).has("default") && specifierOf.get(target) !== pkg ? pkg : null;
+            return availableExports(pkg, true).has("default") && specifierOf.get(target) !== pkg ? pkg : null;
           }
           const forced = byKey.get(target)?.package;
           if (forced) {
             const pkg = forced.name.startsWith("@vue/") ? "vue" : forced.name;
-            return specifierOf.get(target) !== pkg && entryExports(fingerprints, pkg).has(name) ? pkg : null;
+            return specifierOf.get(target) !== pkg && availableExports(pkg).has(name) ? pkg : null;
           }
           const owners = bareCandidates.get(name);
           const own = identified.get(target)!.package;
-          if ((owners?.includes(own) || (!owners && usageNamed.has(`${target}\u0000${name}`))) && own !== specifierOf.get(target)) return own;
+          if ((owners?.includes(own) || (!owners && !checkedPackages.has(own) && usageNamed.has(`${target}\u0000${name}`))) && own !== specifierOf.get(target)) return own;
           return owners && owners.length === 1 && owners[0] !== specifierOf.get(target) ? owners[0]! : null;
         },
         isEmptyModule: (id) => {

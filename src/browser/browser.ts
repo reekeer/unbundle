@@ -58,6 +58,7 @@ export interface BrowserResponse {
   headers: Headers;
   contentType: string;
   body: string;
+  bytes?: Uint8Array;
 }
 
 export interface NetworkEntry {
@@ -291,12 +292,12 @@ export class Browser {
       if (response.status >= 400) {
         throw new HttpError(`HTTP ${response.status}`, response.status, RETRYABLE_STATUS.has(response.status));
       }
-      return { url: start.href, finalUrl: url.href, status: response.status, headers: response.headers, contentType: response.headers.get("content-type") ?? "", body: response.body };
+      return { url: start.href, finalUrl: url.href, contentType: response.headers.get("content-type") ?? "", ...response };
     }
     throw new HttpError(`too many redirects from ${start.href}`);
   }
 
-  private async once(url: URL, type: ResourceType, ctx: RequestContext): Promise<{ status: number; headers: Headers; body: string }> {
+  private async once(url: URL, type: ResourceType, ctx: RequestContext): Promise<Pick<BrowserResponse, "status" | "headers" | "body" | "bytes">> {
     const requestHeaders = this.buildHeaders(url, type, ctx);
     const startedAt = new Date();
     const began = performance.now();
@@ -326,11 +327,13 @@ export class Browser {
       response.headers.forEach((value, name) => entry.responseHeaders.push([name, value]));
       entry.mimeType = response.headers.get("content-type") ?? "";
       this.cookies.store(url, response.headers.getSetCookie());
-      const body = response.status >= 300 && response.status < 400 ? (await response.body?.cancel(), "") : await readCapped(response, this.options.maxBytes);
-      entry.size = Buffer.byteLength(body);
+      const bytes = response.status >= 300 && response.status < 400 ? (await response.body?.cancel(), Buffer.alloc(0)) : await readCapped(response, this.options.maxBytes);
+      const binary = type === "other" && !/^(?:text\/|application\/(?:javascript|json|xml)|image\/svg\+xml)/i.test(entry.mimeType);
+      const body = binary ? "" : new TextDecoder().decode(bytes);
+      entry.size = bytes.byteLength;
       entry.timeMs = Math.round(performance.now() - began);
       this.log.debug(`GET ${response.status} ${type} ${formatSize(entry.size)} ${entry.timeMs}ms ${url.href}`);
-      return { status: response.status, headers: response.headers, body };
+      return { status: response.status, headers: response.headers, body, ...(binary ? { bytes } : {}) };
     } catch (err) {
       entry.timeMs = Math.round(performance.now() - began);
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
@@ -343,13 +346,13 @@ export class Browser {
   }
 }
 
-async function readCapped(response: Response, maxBytes: number): Promise<string> {
+async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel();
     throw new HttpError(`response too large (${declared} bytes > ${maxBytes})`);
   }
-  if (!response.body) return "";
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -363,7 +366,7 @@ async function readCapped(response: Response, maxBytes: number): Promise<string>
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(Buffer.concat(chunks));
+  return Buffer.concat(chunks);
 }
 
 function formatSize(bytes: number): string {

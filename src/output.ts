@@ -185,7 +185,7 @@ export class OutputTree {
   add(file: OutputFile): OutputFile {
     let path = safeRelativePath(file.path);
     const existing = this.files.get(path);
-    if (existing && existing.content === file.content) return existing;
+    if (existing && existing.content === file.content && existing.bytes === file.bytes) return existing;
     if (existing || this.dirs.has(path) || this.hasFileAncestor(path)) path = this.freePath(path);
     const stored = { ...file, path };
     this.files.set(path, stored);
@@ -244,14 +244,14 @@ async function isOurManifest(path: string): Promise<boolean> {
   }
 }
 
-export async function writeTree(root: string, files: Array<{ path: string; content: string }>): Promise<void> {
+export async function writeTree(root: string, files: Array<{ path: string; content: string; bytes?: Uint8Array }>): Promise<void> {
   const entries = await readdir(root).catch(() => [] as string[]);
   const ours = (await isOurManifest(join(root, MANIFEST_FILE))) || (await isOurManifest(join(root, "manifest.json")));
   if (entries.length && !ours) {
     throw new Error(`${root} is not empty and has no ${MANIFEST_FILE}; refusing to overwrite it`);
   }
   await rm(root, { recursive: true, force: true });
-  const targets = files.map((file) => ({ target: resolveInside(root, file.path), content: file.content }));
+  const targets = files.map((file) => ({ target: resolveInside(root, file.path), content: file.bytes ?? file.content }));
   for (const dir of new Set(targets.map((t) => dirname(t.target)))) await mkdir(dir, { recursive: true });
   for (let i = 0; i < targets.length; i += 64) await Promise.all(targets.slice(i, i + 64).map((t) => Bun.write(t.target, t.content)));
 }

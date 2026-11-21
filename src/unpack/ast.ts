@@ -32,7 +32,7 @@ export function parseForFile(path: string, code: string): t.File {
     allowAwaitOutsideFunction: true,
     allowImportExportEverywhere: true,
     errorRecovery: true,
-    plugins: ts ? ["typescript", ...(/x$/i.test(path) ? (["jsx"] as const) : [])] : ["jsx"],
+    plugins: ts ? ["decorators-legacy", "typescript", ...(/x$/i.test(path) ? (["jsx"] as const) : [])] : ["decorators-legacy", "jsx"],
   });
 }
 

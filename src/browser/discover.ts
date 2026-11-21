@@ -7,6 +7,8 @@ const WORKER = /new\s+(?:Shared)?Worker\(\s*(?:new\s+URL\(\s*)?["'`]([^"'`$]+)["
 const SERVICE_WORKER = /serviceWorker\.register\(\s*["'`]([^"'`$]+)["'`]/g;
 const IMPORT_SCRIPTS = /importScripts\(\s*["'`]([^"'`$]+)["'`]/g;
 const CSS_IMPORT = /@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?/g;
+const CSS_URL = /\burl\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)"']+))\s*\)/g;
+const MEDIA = /\.(?:avif|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot|mp3|mp4|ogg|webm)$/i;
 const META_REFRESH = /^\s*\d+\s*;\s*url\s*=\s*['"]?([^'"]+)/i;
 
 export function resolveHttpUrl(href: string, base: URL | string): URL | null {
@@ -123,12 +125,21 @@ export function htmlResources(page: Page): AssetRef[] {
     if (rel.includes("stylesheet")) add(href, "style", "parser");
     else if (rel.includes("modulepreload")) add(href, "module", "preload");
     else if (rel.includes("manifest")) add(href, "manifest", "parser", true);
+    else if (rel.includes("icon") || rel.includes("apple-touch-icon")) add(href, "other", "icon", true);
     else if (rel.includes("preload") || rel.includes("prefetch")) {
       if (as === "script") add(href, "script", rel.includes("preload") ? "preload" : "prefetch", rel.includes("prefetch"));
       else if (as === "style") add(href, "style", "preload");
       else if (as === "fetch" && /\.m?js(\?|$)/.test(href ?? "")) add(href, "fetch", "preload", true);
+      else if (as === "font" || as === "image") add(href, "other", "preload", true);
     }
   }
+  for (const node of root.querySelectorAll("img[src], video[poster], input[type=image][src]")) add(node.getAttribute("src") ?? node.getAttribute("poster"), "other", "media", true);
+  for (const node of root.querySelectorAll("img[srcset], source[srcset]")) {
+    const srcset = node.getAttribute("srcset") ?? "";
+    if (/\bdata:/i.test(srcset)) continue;
+    for (const part of srcset.split(",")) add(part.trim().split(/\s+/)[0], "other", "media", true);
+  }
+  for (const node of root.querySelectorAll("style")) refs.push(...styleResources(node.text, page.baseUrl.href));
   for (const inline of inlineScripts(page)) {
     for (const url of scriptImports(inline.code, page.baseUrl, inline.module)) refs.push({ url, type: "module", initiator: "inline-script" });
   }
@@ -200,6 +211,10 @@ export function styleResources(css: string, styleUrl: string): AssetRef[] {
   for (const match of css.matchAll(CSS_IMPORT)) {
     const url = resolveHttpUrl(match[1]!, styleUrl);
     if (url) refs.push({ url: url.href, type: "style", initiator: `css-import:${styleUrl}` });
+  }
+  for (const match of css.matchAll(CSS_URL)) {
+    const url = resolveHttpUrl((match[1] ?? match[2] ?? match[3])!, styleUrl);
+    if (url && MEDIA.test(url.pathname)) refs.push({ url: url.href, type: "other", initiator: `css-url:${styleUrl}`, optional: true });
   }
   return refs;
 }

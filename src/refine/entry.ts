@@ -108,8 +108,12 @@ export function splitEntry(tree: OutputTree): Map<string, string> {
       });
 
     const ext = posix.extname(file.path);
+    let jsx = false;
+    for (const stmt of main) t.traverseFast(stmt, (node) => {
+      if (t.isJSXElement(node) || t.isJSXFragment(node)) jsx = true;
+    });
     const shared = freePath(tree, DIRS.js, holdsState(rest) ? "store" : "shared", ext);
-    const entryPath = posix.basename(file.path).startsWith("index.") ? freePath(tree, DIRS.js, "main", ext) : file.path;
+    const entryPath = posix.basename(file.path).startsWith("index.") ? freePath(tree, DIRS.js, "main", jsx ? ".jsx" : ext) : jsx && ext !== ".jsx" ? freePath(tree, DIRS.js, posix.basename(file.path, ext), ".jsx") : file.path;
     const exported = new Map<string, string>();
     for (const s of exportList) for (const spec of s.specifiers) if (t.isExportSpecifier(spec)) exported.set(t.isIdentifier(spec.exported) ? spec.exported.name : spec.exported.value, spec.local.name);
     for (const name of mainUses) if (restDeclared.has(name) && !exported.has(name)) exported.set(name, name);

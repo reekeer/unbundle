@@ -877,7 +877,7 @@ function reactNamespaces(ast: t.File): boolean {
       });
       if (!ok || !members.length) continue;
       const source = REACT_SOURCES.find(([pattern]) => members.every((m) => pattern.test(m.name)))?.[1];
-      if (!source || !members.some((m) => /^use|^createElement$|^createRoot$|^Fragment$|^Suspense$/.test(m.name))) continue;
+      if (!source || !members.some((m) => /^use|^createElement$|^createRoot$|^hydrateRoot$|^Fragment$|^Suspense$|^StrictMode$/.test(m.name))) continue;
       if (members.some((m) => m.name === "version" || program.scope.hasBinding(m.name) && !added.get(source)?.has(m.name))) continue;
       for (const { ref, name } of members) {
         const holder = ref.parentPath;

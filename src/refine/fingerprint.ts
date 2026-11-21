@@ -539,16 +539,20 @@ export function identifyModule(print: ModulePrint, db: FingerprintDb, names: str
   const own = names.filter((n) => !GENERIC_EXPORT.test(n));
   const ownDistinct = distinctive(print.features);
   let best: Identification | null = null;
+  let bestScore = 0;
+  let ambiguous = false;
   for (const file of candidates(print, db)) {
     if (own.length && file.names?.length && !file.names.some((n) => own.includes(n))) continue;
     const theirs = fileDistinctive(file);
     if (theirs.list.length < MIN_MODULE_FEATURES) continue;
     const score = containment(theirs.list, mine) * Math.min(1, containment(ownDistinct, theirs.set) * 2);
-    if (score >= MODULE_THRESHOLD && (!best || score > best.confidence)) {
+    if (score >= MODULE_THRESHOLD && score > bestScore) {
+      bestScore = score;
+      ambiguous = false;
       best = { package: file.package, file: file.file, entry: file.entry, ...(file.specifier ? { specifier: file.specifier } : {}), confidence: Number(score.toFixed(3)) };
-    }
+    } else if (score === bestScore && best && file.package !== best.package) ambiguous = true;
   }
-  return best;
+  return ambiguous ? null : best;
 }
 
 const NAME_SUPPORT = 0.3;
@@ -644,11 +648,35 @@ export function idiomPrints(): FunctionPrint[] {
   return idioms;
 }
 
-let database: Promise<FingerprintDb> | null = null;
+const databases = new Map<string, Promise<FingerprintDb>>();
 
 export function loadFingerprints(path = FINGERPRINTS_PATH): Promise<FingerprintDb> {
-  database ??= Promise.resolve().then(() => (existsSync(path) ? fingerprintsFromSigdb(load(path)) : { version: 0, files: [] }));
+  let database = databases.get(path);
+  if (!database) {
+    database = Promise.resolve().then(() => (existsSync(path) ? fingerprintsFromSigdb(load(path)) : { version: 0, files: [] }));
+    databases.set(path, database);
+  }
   return database;
+}
+
+export function withFingerprints(base: FingerprintDb, packages: LibraryFile[]): FingerprintDb {
+  if (!packages.length) return base;
+  const files = [...packages, ...base.files];
+  const shared = base.shared;
+  if (!shared) return { ...base, files };
+  return {
+    ...base,
+    files,
+    shared(tokens) {
+      const matches = shared(tokens);
+      const features = new Set(tokens);
+      for (const file of packages) {
+        const hits = file.features.filter((feature) => features.has(feature)).length;
+        if (hits) matches.set(file, hits);
+      }
+      return matches;
+    },
+  };
 }
 
 export function libraryExports(db: FingerprintDb, id: Identification): FunctionPrint[] {
@@ -748,21 +776,33 @@ export function matchLocals(
   return out;
 }
 
-const entries = new Map<string, Set<string>>();
+const entriesByDb = new WeakMap<FingerprintDb, Map<string, Set<string>>>();
+const versionsByDb = new WeakMap<FingerprintDb, Map<string, string>>();
 const REEXPORTS: Record<string, string[]> = { vue: ["@vue/runtime-dom"], "@vue/runtime-dom": ["@vue/runtime-core"], "@vue/runtime-core": ["@vue/reactivity"] };
 
-export function packageVersions(db: FingerprintDb): Map<string, string> {
-  const versions = new Map<string, string>();
-  for (const file of db.files) if (file.version && !versions.has(file.package)) versions.set(file.package, file.version);
+function selectedVersions(db: FingerprintDb): ReadonlyMap<string, string> {
+  let versions = versionsByDb.get(db);
+  if (!versions) {
+    versions = new Map<string, string>();
+    for (const file of db.files) if (file.version && !versions.has(file.package)) versions.set(file.package, file.version);
+    versionsByDb.set(db, versions);
+  }
   return versions;
 }
 
-export function entryExports(db: FingerprintDb, pkg: string, withDefault = false): Set<string> {
-  const key = `${pkg}\u0000${withDefault}`;
+export function packageVersions(db: FingerprintDb): Map<string, string> {
+  return new Map(selectedVersions(db));
+}
+
+export function entryExports(db: FingerprintDb, pkg: string, withDefault = false, version?: string): Set<string> {
+  let entries = entriesByDb.get(db);
+  if (!entries) entriesByDb.set(db, (entries = new Map()));
+  const key = `${pkg}\u0000${withDefault}\u0000${version ?? ""}`;
   let names = entries.get(key);
   if (!names) {
-    names = new Set(db.files.filter((f) => f.package === pkg && f.specifier === pkg).flatMap((f) => [...(f.names ?? []), ...f.exports.map((e) => e.name)]));
-    for (const inner of REEXPORTS[pkg] ?? []) for (const name of entryExports(db, inner)) names.add(name);
+    const versions = selectedVersions(db);
+    names = new Set(db.files.filter((f) => f.specifier === pkg && f.version === (version ?? versions.get(f.package) ?? "")).flatMap((f) => [...(f.names ?? []), ...f.exports.map((e) => e.name)]));
+    if (names.size) for (const inner of REEXPORTS[pkg] ?? []) for (const name of entryExports(db, inner)) names.add(name);
     if (!withDefault) names.delete("default");
     entries.set(key, names);
   }
@@ -785,12 +825,12 @@ export function rankLocal(fn: FunctionPrint, index: FunctionIndex, known: Set<st
   return [...byName].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.score - a.score);
 }
 
-let strings: Set<string> | null = null;
-
-let stringOwners: Map<string, string> | undefined;
+const stringsByDb = new WeakMap<FingerprintDb, Set<string>>();
+const stringOwnersByDb = new WeakMap<FingerprintDb, Map<string, string>>();
 
 export function stringPackages(db: FingerprintDb): Map<string, string> {
-  if (stringOwners) return stringOwners;
+  const cached = stringOwnersByDb.get(db);
+  if (cached) return cached;
   const owners = new Map<string, Set<string>>();
   for (const file of db.files) {
     for (const feature of file.features) {
@@ -799,14 +839,17 @@ export function stringPackages(db: FingerprintDb): Map<string, string> {
       owners.set(value, (owners.get(value) ?? new Set()).add(file.package.startsWith("@vue/") ? "vue" : file.package));
     }
   }
-  stringOwners = new Map([...owners].filter(([, pkgs]) => pkgs.size === 1).map(([value, pkgs]) => [value, [...pkgs][0]!]));
+  const stringOwners = new Map([...owners].filter(([, pkgs]) => pkgs.size === 1).map(([value, pkgs]) => [value, [...pkgs][0]!]));
+  stringOwnersByDb.set(db, stringOwners);
   return stringOwners;
 }
 
 export function libraryStrings(db: FingerprintDb): Set<string> {
-  if (strings) return strings;
-  strings = new Set();
+  const cached = stringsByDb.get(db);
+  if (cached) return cached;
+  const strings = new Set<string>();
   for (const file of db.files) for (const feature of file.features) if (feature.startsWith("S:") && feature.length >= 10) strings.add(feature.slice(2));
+  stringsByDb.set(db, strings);
   return strings;
 }
 

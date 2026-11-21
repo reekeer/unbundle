@@ -33,6 +33,7 @@ unbundle <url> [options]
 | `--depth <n>` | link depth to crawl (default: 2, 0 = only the given page) |
 | `--max-pages <n>` | pages to crawl inside the site scope (default: 20) |
 | `--include-external` | also load third-party scripts |
+| `--learn` | verify missing or different package fingerprints against npm and cache the matches |
 | `--standalone` | Next.js App Router: write `html/<page>.standalone.html` marking the DOM of each Client Component |
 | `-v, --verbose` / `-q, --quiet` | every request / errors only |
 | `--no-rename`, `--no-format` | debugging: keep minified names / skip prettier |
@@ -59,6 +60,26 @@ page, the Next.js basePath is taken from where `/_next/` sits.
 
 A failed request never stops the run; it is listed in `.unbundle/manifest.json`.
 
+## Local preview
+
+```sh
+unbundle https://example.com
+cd unbun/example.com
+npm start
+```
+
+Open the localhost URL printed by the launcher. For a recovered Vite app, the
+launcher installs the dependencies when needed and serves the files in `src/`
+with Vite. Other sites open an editable snapshot of the captured
+HTML, scripts and styles. The launcher prints what to edit, and a browser reload
+shows the changes. To open a Vite site's snapshot, run `npm start -- --snapshot`.
+Set `PORT` to choose a different local port.
+The manifest's `preview.routes` lists each captured URL and the local file
+served for it in snapshot mode.
+
+The snapshot uses the captured client files. Routes that depend on a server, API,
+or sign-in may require a separate backend.
+
 ## Output
 
 ```
@@ -80,6 +101,7 @@ unbun/<host>/
   package.json           recognized packages with versions, scripts for the framework
   tsconfig.json | jsconfig.json, nuxt.config.ts, astro.config.mjs, vite.config.ts …
   .chunks/               everything exactly as downloaded, page data (RSC payload, Nuxt payload)
+  preview/               editable snapshot for npm start
   .unbundle/
     manifest.json        URL → file, bundler, modules, coverage, findings, errors, quality
     strings.json         every string literal, endpoints and URLs first
@@ -93,6 +115,9 @@ The output opens in VS Code as a project: relative imports resolve, library code
 
 - `coverage`: loaders the emulator could not follow (`import(x)`, `script.src = …`, workers)
   with file and line, modules that were imported but never loaded, failed resources;
+- `recovery`: syntax, local import and export problems, and unsupported Angular template instructions;
+- `bundler.formats`: formats actually unpacked, alongside `bundler.framework` and its
+  version when detected for Angular;
 - `findings`: hash and cipher implementations recognized by their constants (SHA-256, MD5,
   ChaCha20, AES …), proof-of-work loops, `crypto.subtle`, sign-in and captcha integrations
   (Telegram Login Widget and Mini App, TON Connect, Google, Apple, VK, Yandex, OAuth, passkeys,
@@ -142,6 +167,12 @@ from about 300 npm packages: one item per library file and one per exported or l
 plus the component names of Vue kits (reka-ui, Nuxt UI, element-plus, vuetify, naive-ui …).
 Recognized modules go to `vendor/<package>/…` and the site's imports come from the package:
 `import { computed } from "vue"`, `import { useQuery } from "@tanstack/react-query"`.
+
+With `--learn`, unbundle looks for package and version evidence in the loaded
+scripts and source maps. It checks npm archive integrity, computes signatures
+without executing package code, and uses confirmed matches in the same run.
+The local cache can be overridden with `UNBUNDLE_LEARN_CACHE`. Use
+`UNBUNDLE_FINGERPRINTS=/path/to/fingerprints.sigdb` to load a compatible database.
 
 ### Icons
 

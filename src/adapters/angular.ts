@@ -1,9 +1,14 @@
 import type { Asset, Detection, ModuleHint } from "../types.ts";
-import { chunkStem, isEsmChunk, unpackEsmChunk } from "../unpack/wrappers.ts";
+import { chunkStem, isEsmChunk, unpackEsmChunk, unpackWrappedBundle } from "../unpack/wrappers.ts";
+import { isWebpackChunk, isWebpackRuntime } from "../unpack/webpack.ts";
 import { defineAdapter } from "./index.ts";
+import webpack from "./webpack.ts";
 
-const IVY = /\bstatic\s*(?:\\u0275|ɵ)(?:cmp|fac|prov|pipe|dir|mod|inj)\s*=|\\u0275\\u0275defineComponent|ɵɵdefineComponent/;
+const IVY = /(?:\bstatic\s+|\.)(?:\\u0275|ɵ)(?:cmp|fac|prov|pipe|dir|mod|inj)\s*=|\[['"](?:\\u0275|ɵ)(?:cmp|fac|prov|pipe|dir|mod|inj)['"]\]\s*=|(?:\\u0275|ɵ){2}(?:defineComponent|ngDeclareComponent)\b/;
 const SELECTOR = /selectors\s*:\s*\[\s*\[\s*"([a-z][\w-]*)"/g;
+const VERSION = "(\\d+\\.\\d+\\.\\d+(?:-[\\w.-]+)?)";
+const HTML_VERSION = new RegExp(`\\sng-version\\s*=\\s*["']?${VERSION}(?=["'\\s>])`, "gi");
+const SCRIPT_VERSION = new RegExp(`\\[\\s*["']ng-version["']\\s*,\\s*["']${VERSION}["']`, "g");
 
 export function componentName(selector: string): string {
   const words = selector.replace(/^(app|ng|[a-z]{1,3})-(?=[a-z])/, "").split("-").filter(Boolean);
@@ -23,17 +28,44 @@ export default defineAdapter({
   name: "angular",
   detect(page) {
     const evidence: string[] = [];
-    if (/\sng-version="\d/.test(page.html)) evidence.push("ng-version attribute in server-rendered HTML");
-    if (/<script[^>]+src="[^"]*main-[A-Z0-9]{8}\.js"/.test(page.html)) evidence.push("Angular CLI entry main-<HASH>.js");
-    if (/<(app-root|app-[a-z-]+)[\s>]/.test(page.html)) evidence.push("<app-*> root element");
-    if (/_nghost-|_ngcontent-/.test(page.html)) evidence.push("emulated view encapsulation attributes");
-    return { score: Math.min(1, evidence.length * 0.35), evidence };
+    let score = 0;
+    if (/\sng-version\s*=\s*["']?\d/i.test(page.html)) {
+      score += 0.85;
+      evidence.push("ng-version attribute in server-rendered HTML");
+    }
+    if (/<script[^>]+src\s*=\s*["'][^"']*main-[A-Z0-9]{8}\.js["']/.test(page.html)) {
+      score += 0.1;
+      evidence.push("CLI-style entry main-<HASH>.js");
+    }
+    if (/<app-[\w-]+[\s>]/i.test(page.html)) {
+      score += 0.1;
+      evidence.push("<app-*> root element");
+    }
+    if (/\s_ng(?:host|content)-[\w-]+(?=[\s=>])/i.test(page.html)) {
+      score += 0.6;
+      evidence.push("Angular view encapsulation attributes");
+    }
+    return { score: Math.min(1, score), evidence };
   },
   detectAssets: assetEvidence,
+  packageVersions(page, assets) {
+    const versions = new Set([...page.html.matchAll(HTML_VERSION), ...assets.flatMap((asset) => [...asset.body.matchAll(SCRIPT_VERSION)])].map((match) => match[1]!));
+    if (versions.size !== 1) return new Map();
+    const version = [...versions][0]!;
+    return new Map(["core", "common", "router", "forms", "platform-browser", "animations"].map((name) => [`@angular/${name}`, version]));
+  },
   collectAssets: () => [],
+  discover(ctx) {
+    return [...ctx.all.values()].some((asset) => isWebpackRuntime(asset) || isWebpackChunk(asset.body)) ? webpack.discover(ctx) : [];
+  },
+  isRuntime: webpack.isRuntime,
+  coverage(ctx) {
+    return [...ctx.all.values()].some((asset) => isWebpackRuntime(asset) || isWebpackChunk(asset.body)) ? webpack.coverage(ctx) : { unfetchedChunkIds: [] };
+  },
   parseChunk(asset) {
+    if (isWebpackChunk(asset.body) || isWebpackRuntime(asset)) return webpack.parseChunk(asset);
     if (asset.ref.type !== "module" && !isEsmChunk(asset.body)) return null;
-    const chunk = unpackEsmChunk(asset.body, asset.ref.url, "angular");
+    const chunk = unpackWrappedBundle(asset.body, asset.ref.url, "angular") ?? unpackEsmChunk(asset.body, asset.ref.url, "angular");
     if (chunk) return chunk;
     return {
       format: "esm",

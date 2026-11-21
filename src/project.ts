@@ -2,7 +2,8 @@ import { parse } from "node-html-parser";
 import { posix } from "node:path";
 import type { OutputTree } from "./output.ts";
 import type { OutputFile } from "./types.ts";
-import { literalKey, parseProgram, t, traverse } from "./unpack/ast.ts";
+import { literalKey, parseProgram, print, t, traverse } from "./unpack/ast.ts";
+import { reactNamespaceCode } from "./refine/cleanup.ts";
 
 export interface ProjectInfo {
   host: string;
@@ -244,11 +245,40 @@ export function dropAutoImports(tree: OutputTree, root: string): number {
   return dropped;
 }
 
+function viteReactEntry(entry: OutputFile, files: OutputFile[]): void {
+  if (!/\b(?:createRoot|hydrateRoot)\b/.test(entry.content)) return;
+  const ast = parseProgram(reactNamespaceCode(entry.content));
+  for (const stmt of ast.program.body) {
+    if (!t.isImportDeclaration(stmt) || stmt.specifiers.length !== 1 || !stmt.source.value.startsWith(".")) continue;
+    const path = posix.join(posix.dirname(entry.path), stmt.source.value);
+    if (!path.startsWith("vendor/react-router/")) continue;
+    const spec = stmt.specifiers[0];
+    const vendor = files.find((file) => file.path === path);
+    if (!vendor || !t.isImportSpecifier(spec)) continue;
+    const name = literalKey(spec.imported);
+    const wrapper = parseProgram(vendor.content).program.body.find((node) => t.isExportNamedDeclaration(node) && t.isFunctionDeclaration(node.declaration) && node.declaration.id?.name === name);
+    if (!t.isExportNamedDeclaration(wrapper) || !t.isFunctionDeclaration(wrapper.declaration)) continue;
+    let browserHistory = false;
+    let router = false;
+    t.traverseFast(wrapper.declaration.body, (node) => {
+      if (!t.isCallExpression(node)) return;
+      if (t.isIdentifier(node.callee, { name: "createBrowserHistory" })) browserHistory = true;
+      if (t.isMemberExpression(node.callee) && t.isIdentifier(node.callee.property, { name: "createElement" }) && t.isIdentifier(node.arguments[0], { name: "Router" })) router = true;
+    });
+    if (!browserHistory || !router) continue;
+    stmt.source = t.stringLiteral("react-router");
+    spec.imported = t.identifier("BrowserRouter");
+  }
+  entry.content = print(ast);
+}
+
 export function writeProjectFiles(tree: OutputTree, info: ProjectInfo): string[] {
   const nuxt = info.adapter === "nuxt";
   const root = nuxt ? "app" : "src";
   if (nuxt) dropAutoImports(tree, root);
   const files = tree.all();
+  const viteMain = info.adapter === "vite" ? files.find((file) => /^src\/main\.(tsx|ts|jsx|js)$/.test(file.path)) : undefined;
+  if (viteMain && /\.jsx?$/.test(viteMain.path)) viteReactEntry(viteMain, files);
   const code = files.filter((f) => (f.kind === "module" || f.kind === "script") && f.path.startsWith(`${root}/`) && /\.(m?[jt]sx?|vue)$/.test(f.path));
   const vue = files.some((f) => f.path.endsWith(".vue")) || nuxt;
   const svelte = info.adapter === "sveltekit" || files.some((f) => /from\s*["']svelte(\/|["'])/.test(f.content));
@@ -279,13 +309,13 @@ export function writeProjectFiles(tree: OutputTree, info: ProjectInfo): string[]
   if (packages.has("vue") && (nuxt || files.some((f) => /from\s*["']vue-router["']/.test(f.content)))) packages.add("vue-router");
   if (files.some((f) => f.kind === "style" && /tailwind\.css$/.test(f.path))) packages.add("tailwindcss");
   const version = (name: string) => {
-    const own = info.versions.get(name);
+    const own = info.versions.get(name) ?? (name === "react-dom" ? info.versions.get("react") : undefined);
     const sibling = /^@[^/]+\/shared$/.test(name) ? info.versions.get(name.replace(/\/shared$/, "/core")) : undefined;
     const picked = sibling && own && sibling.split(".")[0] !== own.split(".")[0] ? sibling : own;
     return picked ? `^${picked}` : "*";
   };
   const dependencies = Object.fromEntries([...packages].sort().map((name) => [name, version(name)]));
-  const scripts = nuxt ? { dev: "nuxt dev", build: "nuxt build", generate: "nuxt generate", preview: "nuxt preview", postinstall: "nuxt prepare" } : info.adapter === "angular" ? { start: "ng serve", build: "ng build" } : info.adapter === "sveltekit" ? { dev: "vite dev", build: "vite build", preview: "vite preview" } : info.adapter === "astro" ? { dev: "astro dev", build: "astro build", preview: "astro preview" } : info.adapter === "next" ? { dev: "next dev", build: "next build", start: "next start" } : info.adapter === "react-router" ? { dev: "react-router dev", build: "react-router build" } : info.adapter === "vite" || info.adapter === "nuxt" ? { dev: "vite", build: "vite build", preview: "vite preview" } : null;
+  const scripts = nuxt ? { dev: "nuxt dev", build: "nuxt build", generate: "nuxt generate", preview: "nuxt preview", postinstall: "nuxt prepare" } : info.adapter === "sveltekit" ? { dev: "vite dev", build: "vite build", preview: "vite preview" } : info.adapter === "astro" ? { dev: "astro dev", build: "astro build", preview: "astro preview" } : info.adapter === "next" ? { dev: "next dev", build: "next build", "serve:build": "next start" } : info.adapter === "react-router" ? { dev: "react-router dev", build: "react-router build" } : info.adapter === "vite" || info.adapter === "nuxt" ? { dev: "vite", build: "vite build", preview: "vite preview" } : null;
   const written: string[] = [];
   const add = (path: string, content: string) => {
     tree.add({ path, content, kind: "data", renamable: false });
@@ -302,8 +332,7 @@ export function writeProjectFiles(tree: OutputTree, info: ProjectInfo): string[]
     if (info.typescript) devDependencies.typescript = "*";
     const base = info.base && info.base !== "/" ? info.base : null;
     const config = ['import { fileURLToPath } from "node:url";', 'import { defineConfig } from "vite";', ...plugins.map(([name, pkg]) => `import ${name} from "${pkg}";`), "", "export default defineConfig({", ...(base ? [`  base: ${JSON.stringify(base)},`] : []), `  plugins: [${plugins.map(([name]) => `${name}()`).join(", ")}],`, "  resolve: {", '    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)), "@vendor": fileURLToPath(new URL("./vendor", import.meta.url)) },', "  },", "});", ""].join("\n");
-    const entry = files.map((f) => f.path).find((path) => /^src\/main\.(tsx|ts|jsx|js)$/.test(path));
-    const main = entry ? files.find((f) => f.path === entry) : undefined;
+    const main = viteMain;
     const sheets = files.filter((f) => f.kind === "style" && /^src\/assets\/css\/[^/]+\.css$/.test(f.path)).map((f) => `./${f.path.slice(4)}`);
     if (main && sheets.length && !/import\s*["'][^"']+\.css["']/.test(main.content)) {
       const lines = main.content.split("\n");
@@ -314,8 +343,8 @@ export function writeProjectFiles(tree: OutputTree, info: ProjectInfo): string[]
       lines.splice(at, 0, ...sheets.map((sheet) => `import "${sheet}";`));
       main.content = lines.join("\n");
     }
-    if (info.html && entry) {
-      const index = viteIndexHtml(info.html, entry, info.base ?? "/");
+    if (info.html && main) {
+      const index = viteIndexHtml(info.html, main.path, info.base ?? "/");
       if (index) tree.add({ path: "index.html", content: index, kind: "data", renamable: false });
     }
     tree.add({ path: info.typescript ? "vite.config.ts" : "vite.config.js", content: config, kind: "data", renamable: false });
@@ -327,7 +356,7 @@ export function writeProjectFiles(tree: OutputTree, info: ProjectInfo): string[]
   const prettierPlugins = [...(astro ? ["prettier-plugin-astro"] : []), ...(svelte ? ["prettier-plugin-svelte"] : [])];
   add(".prettierrc", json({ printWidth: 120, htmlWhitespaceSensitivity: "css", ...(prettierPlugins.length ? { plugins: prettierPlugins } : {}), overrides: [{ files: ["*.vue", "*.astro", "*.html", "*.svelte"], options: { printWidth: 200 } }] }));
   add(".prettierignore", [".chunks", ".unbundle", "vendor", "dist", ".output", ".nuxt", ".astro", "node_modules", ""].join("\n"));
-  const allScripts = { ...(scripts ?? {}), format: "prettier --write ." };
+  const allScripts = { ...(scripts ?? {}), start: "node .unbundle/start.mjs", format: "prettier --write ." };
   add("package.json", json({ name: info.host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+/, "") || "site", private: true, type: "module", scripts: allScripts, dependencies, ...(Object.keys(devDependencies).length ? { devDependencies } : {}) }));
   if (config) add(info.typescript ? "nuxt.config.ts" : "nuxt.config.js", config.code);
 
