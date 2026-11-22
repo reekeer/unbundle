@@ -17,9 +17,9 @@ the site's JavaScript.
 bunx @reekeer/unbundle https://example.com
 ```
 
-`npx @reekeer/unbundle` and `pnpm dlx @reekeer/unbundle` work too. The CLI runs on Bun; with
-only Node installed, the `bin/unbundle.mjs` launcher uses a system `bun` or fetches it with
-`npx bun`.
+`npx @reekeer/unbundle` and `pnpm dlx @reekeer/unbundle` require Node.js 22 or 24.
+The CLI runs on Bun. The Node.js launcher uses an installed `bun` or fetches
+the pinned Bun version through `npx`.
 
 ## Usage
 
@@ -34,6 +34,7 @@ unbundle <url> [options]
 | `--max-pages <n>` | pages to crawl inside the site scope (default: 20) |
 | `--include-external` | also load third-party scripts |
 | `--learn` | verify missing or different package fingerprints against npm and cache the matches |
+| `--har <file>` | recover a page offline from same-origin GET responses in a browser HAR with content |
 | `--standalone` | Next.js App Router: write `html/<page>.standalone.html` marking the DOM of each Client Component |
 | `-v, --verbose` / `-q, --quiet` | every request / errors only |
 | `--no-rename`, `--no-format` | debugging: keep minified names / skip prettier |
@@ -42,7 +43,7 @@ A site may live under a sub-path (`https://host/t/app`): every URL is resolved a
 page, the Next.js basePath is taken from where `/_next/` sits.
 
 ```
-  unbundle v0.1.1  -> https://example.com/
+  unbundle v0.2.0  -> https://example.com/
 
 [ + ] detected bundler: vite
 [ + ] found 20 pages
