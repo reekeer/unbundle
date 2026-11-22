@@ -5,6 +5,7 @@
 [![Bun](https://img.shields.io/badge/bun-%3E%3D1.4-black)](https://bun.sh/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 [![CI](https://github.com/reekeer/unbundle/actions/workflows/release.yml/badge.svg)](https://github.com/reekeer/unbundle/actions/workflows/release.yml)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Freekeer%2Funbundle.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Freekeer%2Funbundle?ref=badge_shield)
 
 Opens a site the way a browser does and turns its production bundles back into a readable
 project: modules split out of chunks, names restored, components one per file, libraries
@@ -228,7 +229,10 @@ Fixtures are four apps stored as source archives in `test/fixtures/apps/`, built
 | `webpack-app` | `site-webpack`, `site-rspack` | webpack 5 and Rspack builds, an inlined SHA-256 proof-of-work |
 
 `bun run fingerprints` installs the packages into `.cache/fingerprints`; on a slow disk point
-`UNBUNDLE_FP_CACHE` at a local directory with the same `package.json`.
+`UNBUNDLE_FP_CACHE` at a local directory with the same `package.json`. The walk itself lives in
+`scripts/fingerprints/extract.ts`: `bun scripts/fingerprints/extract.ts --modules <node_modules>
+--out <rules.json> [--components] [--icons]` writes the rules as JSON without building, which is how
+sigdb-factory rebuilds both databases from fresh package releases.
 
 `.github/workflows/release.yml` typechecks and tests every push and pull request; a `v*` tag
 also publishes the packed tarball to npm (trusted publishing) and to a GitHub release.
@@ -236,3 +240,6 @@ also publishes the packed tarball to npm (trusted publishing) and to a GitHub re
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Freekeer%2Funbundle.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Freekeer%2Funbundle?ref=badge_large)

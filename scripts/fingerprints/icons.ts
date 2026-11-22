@@ -1,10 +1,14 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { build } from "@reekeer/sigdb";
 import { ICON_GROUP, ICONS_PATH, shapeSignature, shapeToken } from "../../src/refine/icons.ts";
 import { parseProgram, t } from "../../src/unpack/ast.ts";
+import { listDir } from "./list.ts";
 
 const HEROICON_VARIANTS = ["16/solid", "20/solid", "24/outline", "24/solid"];
+
+/** Packages icons.sigdb is built from. */
+export const ICON_PACKAGES = ["lucide", "@heroicons/react", "react-icons", "@radix-ui/react-icons", "@remixicon/react", "react-feather", "react-bootstrap-icons", "@primer/octicons-react", "@mdi/js"];
 
 interface Entry {
   family: string;
@@ -53,7 +57,7 @@ function packageIcons(modules: string, family: string, files: (root: string) => 
 }
 
 function dirFiles(dir: string, pattern: RegExp): string[] {
-  return existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)).map((f) => join(dir, f)) : [];
+  return existsSync(dir) ? listDir(dir).filter((f) => pattern.test(f)).map((f) => join(dir, f)) : [];
 }
 
 function otherPackages(modules: string): Entry[] {
@@ -71,7 +75,7 @@ function otherPackages(modules: string): Entry[] {
 function lucide(modules: string): Entry[] {
   const dir = join(modules, "lucide/dist/esm/icons");
   if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+  return listDir(dir)
     .filter((f) => f.endsWith(".mjs"))
     .flatMap((f) => exportedShapes(join(dir, f)).filter((s) => t.isArrayExpression(s.node)))
     .flatMap(({ name, node }) => {
@@ -85,7 +89,7 @@ function heroicons(modules: string): Entry[] {
   for (const variant of HEROICON_VARIANTS) {
     const dir = join(modules, "@heroicons/react", variant, "esm");
     if (!existsSync(dir)) continue;
-    for (const file of readdirSync(dir).filter((f) => /^[A-Z]\w*\.js$/.test(f))) {
+    for (const file of listDir(dir).filter((f) => /^[A-Z]\w*\.js$/.test(f))) {
       const fn = exportedShapes(join(dir, file)).find((s) => t.isFunctionDeclaration(s.node));
       const signature = fn ? shapeSignature(fn.node) : null;
       if (signature) out.push({ family: "heroicons", variant, name: basename(file, ".js"), signature });
@@ -98,7 +102,7 @@ function reactIcons(modules: string): Entry[] {
   const root = join(modules, "react-icons");
   if (!existsSync(root)) return [];
   const out: Entry[] = [];
-  for (const set of readdirSync(root).filter((d) => existsSync(join(root, d, "index.mjs")) && d !== "lib")) {
+  for (const set of listDir(root).filter((d) => existsSync(join(root, d, "index.mjs")) && d !== "lib")) {
     for (const { name, node } of exportedShapes(join(root, set, "index.mjs"))) {
       const signature = shapeSignature(node);
       if (signature) out.push({ family: "react-icons", variant: set, name, signature });
@@ -107,14 +111,28 @@ function reactIcons(modules: string): Entry[] {
   return out;
 }
 
-export function buildIcons(modules: string): { icons: number; size: number } {
+export interface IconRules {
+  /** Icon shapes found, duplicates included. */
+  shapes: number;
+  groups: Record<string, object>;
+  metadata: { dataset: string; families: string[] };
+  rules: Record<string, { data: Omit<Entry, "signature">; [ICON_GROUP]: string[] }>;
+}
+
+/** icons.sigdb rules for the icon packages installed under `modules`. */
+export function iconRules(modules: string): IconRules {
   const entries = [...lucide(modules), ...heroicons(modules), ...reactIcons(modules), ...otherPackages(modules)];
-  const rules: Record<string, { data: Omit<Entry, "signature">; [ICON_GROUP]: string[] }> = {};
+  const rules: IconRules["rules"] = {};
   for (const entry of entries) {
     const key = `${entry.family}/${entry.variant ? `${entry.variant}/` : ""}${entry.name}`;
     rules[key] = { data: { family: entry.family, variant: entry.variant, name: entry.name }, [ICON_GROUP]: [shapeToken(entry.signature)] };
   }
   const families = [...new Set(entries.map((e) => (e.variant && e.family === "react-icons" ? `react-icons/${e.variant}` : e.family)))].sort();
-  const result = build(rules, ICONS_PATH, { groups: { [ICON_GROUP]: {} }, metadata: { dataset: "unbundle icon shapes", families } });
-  return { icons: entries.length, size: result.size };
+  return { shapes: entries.length, groups: { [ICON_GROUP]: {} }, metadata: { dataset: "unbundle icon shapes", families }, rules };
+}
+
+export function buildIcons(modules: string): { icons: number; size: number } {
+  const { shapes, groups, metadata, rules } = iconRules(modules);
+  const result = build(rules, ICONS_PATH, { groups, metadata });
+  return { icons: shapes, size: result.size };
 }
